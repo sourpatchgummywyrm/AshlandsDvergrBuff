@@ -14,7 +14,7 @@ namespace AshlandsDvergrMod
     {
         public const string PluginGuid = "com.valheim.ashlandsdvergrmod";
         public const string PluginName = "Ashlands Dvergr Boost";
-        public const string PluginVersion = "1.0.1";
+        public const string PluginVersion = "1.0.0";
 
         internal static ManualLogSource Log;
 
@@ -33,12 +33,16 @@ namespace AshlandsDvergrMod
 
         internal static ConfigEntry<float> HealthMultiplier;
         internal static ConfigEntry<float> DamageMultiplier;
+        internal static ConfigEntry<float> PassiveHealPercentPerTick;
+        internal static ConfigEntry<float> PassiveHealIntervalSeconds;
 
         internal static ConfigEntry<int> MinLevel;
         internal static ConfigEntry<int> MaxLevel;
         internal static ConfigEntry<float> LevelUpChance;
         internal static ConfigEntry<float> VisualScale1Star;
         internal static ConfigEntry<float> VisualScale2Star;
+        internal static ConfigEntry<bool> EnableCoolVisuals;
+        internal static ConfigEntry<float> AuraLightIntensity;
 
         private static readonly HashSet<int> PatchedSpawnLists = new HashSet<int>();
         private static readonly HashSet<int> PatchedCreatureSpawners = new HashSet<int>();
@@ -136,7 +140,7 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(40f, 200f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            // 3. Combat Stats
+            // 3. Combat Stats & Passive Healing
             HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 2.0f,
                 new ConfigDescription(
                     "Base health multiplier for Dvergrs in the Ashlands (default: 2.0 = 2x base HP: 600 -> 1200).\n" +
@@ -153,7 +157,23 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0.5f, 10.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            // 4. Stars & Levels
+            PassiveHealPercentPerTick = Config.Bind("3. Combat Stats", "PassiveHealPercentPerTick", 2.0f,
+                new ConfigDescription(
+                    "Percentage of max health regenerated per heal tick by Ashlands Dvergrs (0 = disabled).\n" +
+                    "Default: 2.0% every 5 seconds (~24 HP/tick at 0-star, ~72 HP/tick at 2-star).\n" +
+                    "Range: 0.0 to 25.0",
+                    new AcceptableValueRange<float>(0.0f, 25.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            PassiveHealIntervalSeconds = Config.Bind("3. Combat Stats", "PassiveHealIntervalSeconds", 5.0f,
+                new ConfigDescription(
+                    "Seconds between passive regeneration ticks for Ashlands Dvergrs.\n" +
+                    "Default: 5.0 seconds.\n" +
+                    "Range: 1.0 to 60.0",
+                    new AcceptableValueRange<float>(1.0f, 60.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            // 4. Stars, Levels & Visuals
             MinLevel = Config.Bind("4. Stars & Levels", "MinLevel", 1,
                 new ConfigDescription(
                     "Minimum level for Ashlands Dvergrs (1 = 0 stars, 2 = 1 star, 3 = 2 stars).\n" +
@@ -178,20 +198,35 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0f, 100f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VisualScale1Star = Config.Bind("4. Stars & Levels", "VisualScale1Star", 1.1f,
+            VisualScale1Star = Config.Bind("4. Stars & Levels", "VisualScale1Star", 1.12f,
                 new ConfigDescription(
                     "Visual body scale multiplier for 1-star Ashlands Dvergrs.\n" +
-                    "Default: 1.1 (10% larger).\n" +
+                    "Default: 1.12 (12% larger).\n" +
                     "Range: 1.0 to 1.5",
                     new AcceptableValueRange<float>(1.0f, 1.5f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VisualScale2Star = Config.Bind("4. Stars & Levels", "VisualScale2Star", 1.2f,
+            VisualScale2Star = Config.Bind("4. Stars & Levels", "VisualScale2Star", 1.25f,
                 new ConfigDescription(
                     "Visual body scale multiplier for 2-star Ashlands Dvergrs.\n" +
-                    "Default: 1.2 (20% larger).\n" +
+                    "Default: 1.25 (25% larger).\n" +
                     "Range: 1.0 to 2.0",
                     new AcceptableValueRange<float>(1.0f, 2.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            EnableCoolVisuals = Config.Bind("4. Stars & Levels", "EnableCoolVisuals", true,
+                new ConfigDescription(
+                    "Enhances Ashlands Dvergrs with flameforged armor tinting, glowing molten runes/trim, and a flickering forge-ember aura light that scales with star level.\n" +
+                    "Default: true",
+                    null,
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            AuraLightIntensity = Config.Bind("4. Stars & Levels", "AuraLightIntensity", 1.2f,
+                new ConfigDescription(
+                    "Intensity multiplier for the flickering molten ember aura light on Ashlands Dvergrs (0 = disable light).\n" +
+                    "Default: 1.2.\n" +
+                    "Range: 0.0 to 3.0",
+                    new AcceptableValueRange<float>(0.0f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // Text-file support: Save immediately so the .cfg file exists on disk with full comments
@@ -250,7 +285,6 @@ namespace AshlandsDvergrMod
             try
             {
                 Log.LogInfo("Text config file modified on disk. Reloading settings...");
-                // Reload values from text file into ConfigEntry objects
                 ((AshlandsDvergrPlugin)BepInEx.Bootstrap.Chainloader.PluginInfos[PluginGuid].Instance).Config.Reload();
             }
             catch (Exception ex)
@@ -284,6 +318,14 @@ namespace AshlandsDvergrMod
                     ch.m_health = baseHp * Mathf.Max(0.1f, HealthMultiplier.Value);
                     EnsureVisualStarSetups(ch);
                     Log.LogInfo($"Refreshed DvergerAshlands prefab base health to {ch.m_health} (HealthMultiplier={HealthMultiplier.Value}).");
+                }
+            }
+
+            foreach (AshlandsDvergrEnhancer enhancer in UnityEngine.Object.FindObjectsByType<AshlandsDvergrEnhancer>(FindObjectsSortMode.None))
+            {
+                if (enhancer != null)
+                {
+                    enhancer.ApplyCoolVisuals();
                 }
             }
         }
@@ -357,22 +399,36 @@ namespace AshlandsDvergrMod
             {
                 return;
             }
+            if (le.m_mainRender == null)
+            {
+                le.m_mainRender = ch.GetComponentInChildren<SkinnedMeshRenderer>();
+            }
+
             float s1 = Mathf.Max(1f, VisualScale1Star.Value);
             float s2 = Mathf.Max(s1, VisualScale2Star.Value);
+            Color emissive1 = new Color(1.5f, 0.42f, 0.08f, 1f);
+            Color emissive2 = new Color(2.6f, 0.72f, 0.14f, 1f);
 
             if (le.m_levelSetups.Count == 0)
             {
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s1,
-                    m_hue = -0.05f,
-                    m_saturation = 0.2f,
-                    m_value = 0.05f
+                    m_hue = -0.04f,
+                    m_saturation = 0.28f,
+                    m_value = 0.06f,
+                    m_setEmissiveColor = EnableCoolVisuals.Value,
+                    m_emissiveColor = emissive1
                 });
             }
             else
             {
                 le.m_levelSetups[0].m_scale = s1;
+                le.m_levelSetups[0].m_hue = -0.04f;
+                le.m_levelSetups[0].m_saturation = 0.28f;
+                le.m_levelSetups[0].m_value = 0.06f;
+                le.m_levelSetups[0].m_setEmissiveColor = EnableCoolVisuals.Value;
+                le.m_levelSetups[0].m_emissiveColor = emissive1;
             }
 
             if (le.m_levelSetups.Count == 1)
@@ -380,14 +436,21 @@ namespace AshlandsDvergrMod
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s2,
-                    m_hue = -0.1f,
-                    m_saturation = 0.35f,
-                    m_value = 0.1f
+                    m_hue = -0.08f,
+                    m_saturation = 0.45f,
+                    m_value = 0.12f,
+                    m_setEmissiveColor = EnableCoolVisuals.Value,
+                    m_emissiveColor = emissive2
                 });
             }
             else if (le.m_levelSetups.Count >= 2)
             {
                 le.m_levelSetups[1].m_scale = s2;
+                le.m_levelSetups[1].m_hue = -0.08f;
+                le.m_levelSetups[1].m_saturation = 0.45f;
+                le.m_levelSetups[1].m_value = 0.12f;
+                le.m_levelSetups[1].m_setEmissiveColor = EnableCoolVisuals.Value;
+                le.m_levelSetups[1].m_emissiveColor = emissive2;
             }
         }
 
@@ -437,7 +500,17 @@ namespace AshlandsDvergrMod
         [HarmonyPostfix]
         private static void Character_Awake_Postfix(Character __instance, ZNetView ___m_nview)
         {
-            if (!IsAshlandsDvergr(__instance) || ___m_nview == null || !___m_nview.IsValid() || !___m_nview.IsOwner())
+            if (!IsAshlandsDvergr(__instance))
+            {
+                return;
+            }
+
+            if (__instance.GetComponent<AshlandsDvergrEnhancer>() == null)
+            {
+                __instance.gameObject.AddComponent<AshlandsDvergrEnhancer>();
+            }
+
+            if (___m_nview == null || !___m_nview.IsValid() || !___m_nview.IsOwner())
             {
                 return;
             }
@@ -465,10 +538,19 @@ namespace AshlandsDvergrMod
         [HarmonyPostfix]
         private static void Character_SetLevel_Postfix(Character __instance)
         {
-            if (IsAshlandsDvergr(__instance) && __instance.IsOwner())
+            if (!IsAshlandsDvergr(__instance))
+            {
+                return;
+            }
+            if (__instance.IsOwner())
             {
                 float maxHp = __instance.GetMaxHealth();
                 __instance.SetHealth(maxHp);
+            }
+            AshlandsDvergrEnhancer enhancer = __instance.GetComponent<AshlandsDvergrEnhancer>();
+            if (enhancer != null)
+            {
+                enhancer.ApplyCoolVisuals();
             }
         }
 
@@ -721,6 +803,182 @@ namespace AshlandsDvergrMod
                 float mult = Mathf.Max(0.1f, DamageMultiplier.Value) * (1f + Mathf.Max(0, owner.GetLevel() - 1) * 0.5f);
                 __instance.m_damage.Modify(mult);
             }
+        }
+    }
+
+    /// <summary>
+    /// Component attached to Ashlands Dvergr instances to drive slow passive regeneration
+    /// and flameforged visual enhancements (molten armor glow + flickering forge aura light).
+    /// </summary>
+    internal class AshlandsDvergrEnhancer : MonoBehaviour
+    {
+        private Character _character;
+        private ZNetView _nview;
+        private Light _auraLight;
+        private float _healTimer;
+        private float _noiseSeed;
+        private float _baseLightIntensity = 1.0f;
+
+        private void Awake()
+        {
+            _character = GetComponent<Character>();
+            _nview = GetComponent<ZNetView>();
+            _noiseSeed = UnityEngine.Random.Range(0f, 100f);
+        }
+
+        private void Start()
+        {
+            ApplyCoolVisuals();
+        }
+
+        private void Update()
+        {
+            if (_character == null || _character.IsDead())
+            {
+                if (_auraLight != null)
+                {
+                    _auraLight.enabled = false;
+                }
+                return;
+            }
+
+            // Flicker molten aura light like a living forge fire
+            if (_auraLight != null && _auraLight.enabled)
+            {
+                float flicker = 0.85f + 0.30f * Mathf.PerlinNoise(Time.time * 3.5f, _noiseSeed);
+                _auraLight.intensity = _baseLightIntensity * flicker;
+            }
+
+            // Slow passive regeneration (owner authoritative)
+            if (_nview == null || !_nview.IsValid() || !_nview.IsOwner())
+            {
+                return;
+            }
+
+            float healPct = AshlandsDvergrPlugin.PassiveHealPercentPerTick.Value;
+            if (healPct <= 0f)
+            {
+                return;
+            }
+
+            float interval = Mathf.Max(1f, AshlandsDvergrPlugin.PassiveHealIntervalSeconds.Value);
+            _healTimer += Time.deltaTime;
+            if (_healTimer < interval)
+            {
+                return;
+            }
+            _healTimer = 0f;
+
+            float currentHp = _character.GetHealth();
+            float maxHp = _character.GetMaxHealth();
+            if (currentHp > 0f && currentHp < maxHp)
+            {
+                float healAmount = maxHp * (healPct / 100f);
+                _character.Heal(healAmount, showText: false);
+            }
+        }
+
+        internal void ApplyCoolVisuals()
+        {
+            if (_character == null)
+            {
+                return;
+            }
+
+            AshlandsDvergrPlugin.EnsureVisualStarSetups(_character);
+            int level = Mathf.Max(1, _character.GetLevel());
+
+            LevelEffects le = _character.GetComponentInChildren<LevelEffects>();
+            if (le != null)
+            {
+                le.SetupLevelVisualization(level);
+            }
+
+            bool coolEnabled = AshlandsDvergrPlugin.EnableCoolVisuals.Value;
+            float lightMult = Mathf.Max(0f, AshlandsDvergrPlugin.AuraLightIntensity.Value);
+
+            if (!coolEnabled)
+            {
+                if (_auraLight != null)
+                {
+                    _auraLight.enabled = false;
+                }
+                return;
+            }
+
+            // Apply subtle molten rim/rune emission & armor tint across renderers
+            Color emissionColor = level switch
+            {
+                3 => new Color(2.4f, 0.68f, 0.14f, 1f), // 2-Star Ashlord: bright molten gold-crimson
+                2 => new Color(1.4f, 0.38f, 0.08f, 1f), // 1-Star Flameforged: glowing ember orange
+                _ => new Color(0.55f, 0.16f, 0.04f, 1f) // 0-Star Veteran: warm volcanic ember glow
+            };
+
+            foreach (Renderer r in _character.GetComponentsInChildren<Renderer>())
+            {
+                if (r == null || r.sharedMaterials == null)
+                {
+                    continue;
+                }
+                Material[] mats = r.materials;
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    Material m = mats[i];
+                    if (m == null)
+                    {
+                        continue;
+                    }
+                    if (m.HasProperty("_EmissionColor"))
+                    {
+                        m.EnableKeyword("_EMISSION");
+                        m.SetColor("_EmissionColor", emissionColor);
+                    }
+                    if (level == 1 && m.HasProperty("_Saturation"))
+                    {
+                        m.SetFloat("_Hue", -0.02f);
+                        m.SetFloat("_Saturation", 0.15f);
+                        m.SetFloat("_Value", 0.03f);
+                    }
+                }
+            }
+
+            // Setup or update dynamic forge-ember point light
+            if (lightMult <= 0f)
+            {
+                if (_auraLight != null)
+                {
+                    _auraLight.enabled = false;
+                }
+                return;
+            }
+
+            if (_auraLight == null)
+            {
+                GameObject lightObj = new GameObject("AshlandsDvergr_ForgeAura");
+                lightObj.transform.SetParent(_character.transform, worldPositionStays: false);
+                lightObj.transform.localPosition = new Vector3(0f, 1.3f, 0.15f);
+                _auraLight = lightObj.AddComponent<Light>();
+                _auraLight.type = LightType.Point;
+                _auraLight.shadows = LightShadows.None;
+            }
+
+            _auraLight.enabled = true;
+            _auraLight.color = level >= 3
+                ? new Color(1.0f, 0.55f, 0.15f)
+                : new Color(1.0f, 0.38f, 0.10f);
+            _auraLight.range = level switch
+            {
+                3 => 5.5f,
+                2 => 4.2f,
+                _ => 3.0f
+            };
+            _baseLightIntensity = (level switch
+            {
+                3 => 1.8f,
+                2 => 1.3f,
+                _ => 0.85f
+            }) * lightMult;
+            _auraLight.intensity = _baseLightIntensity;
         }
     }
 

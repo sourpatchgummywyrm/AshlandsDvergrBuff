@@ -16,6 +16,10 @@ A Valheim BepInEx mod that turns Ashlands Dvergrs into the formidable allies (or
   - Automatically scales max and current health with star rank (Level 1: 1200 HP, Level 2: 2400 HP, Level 3: 3600 HP).
 - **Damage (2x base multiplier)**:
   - Doubles outgoing damage across melee strikes, Arbalest bolts, and mage spells/AOEs, stacking with the vanilla +50% per star level bonus.
+- **Slow Passive Healing**:
+  - Ashlands Dvergrs slowly regenerate health out of or between skirmishes (default `2.0%` max HP every `5` seconds).
+- **Flameforged Visuals**:
+  - Star-ranked Ashlands Dvergrs scale up (`1.12x` / `1.25x`), gain crimson-bronze / obsidian-gold armor tinting, glowing molten runes/trim, and a flickering volcanic forge-ember aura light.
 - **Fully Configurable (GUI & Text File)**:
   - All multipliers, spawn parameters, and star chances can be edited in real time via **BepInEx Configuration Manager** (press `F1` in-game) OR directly by editing the text configuration file.
   - Editing and saving the `.cfg` text file in Notepad / any text editor reloads settings live without needing to restart the game.
