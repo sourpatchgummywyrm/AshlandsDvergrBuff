@@ -198,33 +198,33 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0f, 100f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VisualScale1Star = Config.Bind("4. Stars & Levels", "VisualScale1Star", 1.12f,
+            VisualScale1Star = Config.Bind("4. Stars & Levels", "VisualScale1Star", 1.1f,
                 new ConfigDescription(
                     "Visual body scale multiplier for 1-star Ashlands Dvergrs.\n" +
-                    "Default: 1.12 (12% larger).\n" +
+                    "Default: 1.1 (10% larger).\n" +
                     "Range: 1.0 to 1.5",
                     new AcceptableValueRange<float>(1.0f, 1.5f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VisualScale2Star = Config.Bind("4. Stars & Levels", "VisualScale2Star", 1.25f,
+            VisualScale2Star = Config.Bind("4. Stars & Levels", "VisualScale2Star", 1.2f,
                 new ConfigDescription(
                     "Visual body scale multiplier for 2-star Ashlands Dvergrs.\n" +
-                    "Default: 1.25 (25% larger).\n" +
+                    "Default: 1.2 (20% larger).\n" +
                     "Range: 1.0 to 2.0",
                     new AcceptableValueRange<float>(1.0f, 2.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             EnableCoolVisuals = Config.Bind("4. Stars & Levels", "EnableCoolVisuals", true,
                 new ConfigDescription(
-                    "Enhances Ashlands Dvergrs with flameforged armor tinting, glowing molten runes/trim, and a flickering forge-ember aura light that scales with star level.\n" +
+                    "Enhances starred Ashlands Dvergrs with subtle veteran armor shading and a soft warm rim light while preserving their original textures.\n" +
                     "Default: true",
                     null,
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            AuraLightIntensity = Config.Bind("4. Stars & Levels", "AuraLightIntensity", 1.2f,
+            AuraLightIntensity = Config.Bind("4. Stars & Levels", "AuraLightIntensity", 0.6f,
                 new ConfigDescription(
-                    "Intensity multiplier for the flickering molten ember aura light on Ashlands Dvergrs (0 = disable light).\n" +
-                    "Default: 1.2.\n" +
+                    "Intensity multiplier for the subtle warm rim light on Ashlands Dvergrs (0 = disable light).\n" +
+                    "Default: 0.6.\n" +
                     "Range: 0.0 to 3.0",
                     new AcceptableValueRange<float>(0.0f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -406,29 +406,26 @@ namespace AshlandsDvergrMod
 
             float s1 = Mathf.Max(1f, VisualScale1Star.Value);
             float s2 = Mathf.Max(s1, VisualScale2Star.Value);
-            Color emissive1 = new Color(1.5f, 0.42f, 0.08f, 1f);
-            Color emissive2 = new Color(2.6f, 0.72f, 0.14f, 1f);
+            bool tint = EnableCoolVisuals.Value;
 
             if (le.m_levelSetups.Count == 0)
             {
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s1,
-                    m_hue = -0.04f,
-                    m_saturation = 0.28f,
-                    m_value = 0.06f,
-                    m_setEmissiveColor = EnableCoolVisuals.Value,
-                    m_emissiveColor = emissive1
+                    m_hue = tint ? -0.02f : 0f,
+                    m_saturation = tint ? 0.08f : 0f,
+                    m_value = tint ? 0.02f : 0f,
+                    m_setEmissiveColor = false
                 });
             }
             else
             {
                 le.m_levelSetups[0].m_scale = s1;
-                le.m_levelSetups[0].m_hue = -0.04f;
-                le.m_levelSetups[0].m_saturation = 0.28f;
-                le.m_levelSetups[0].m_value = 0.06f;
-                le.m_levelSetups[0].m_setEmissiveColor = EnableCoolVisuals.Value;
-                le.m_levelSetups[0].m_emissiveColor = emissive1;
+                le.m_levelSetups[0].m_hue = tint ? -0.02f : 0f;
+                le.m_levelSetups[0].m_saturation = tint ? 0.08f : 0f;
+                le.m_levelSetups[0].m_value = tint ? 0.02f : 0f;
+                le.m_levelSetups[0].m_setEmissiveColor = false;
             }
 
             if (le.m_levelSetups.Count == 1)
@@ -436,21 +433,19 @@ namespace AshlandsDvergrMod
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s2,
-                    m_hue = -0.08f,
-                    m_saturation = 0.45f,
-                    m_value = 0.12f,
-                    m_setEmissiveColor = EnableCoolVisuals.Value,
-                    m_emissiveColor = emissive2
+                    m_hue = tint ? -0.04f : 0f,
+                    m_saturation = tint ? 0.15f : 0f,
+                    m_value = tint ? 0.04f : 0f,
+                    m_setEmissiveColor = false
                 });
             }
             else if (le.m_levelSetups.Count >= 2)
             {
                 le.m_levelSetups[1].m_scale = s2;
-                le.m_levelSetups[1].m_hue = -0.08f;
-                le.m_levelSetups[1].m_saturation = 0.45f;
-                le.m_levelSetups[1].m_value = 0.12f;
-                le.m_levelSetups[1].m_setEmissiveColor = EnableCoolVisuals.Value;
-                le.m_levelSetups[1].m_emissiveColor = emissive2;
+                le.m_levelSetups[1].m_hue = tint ? -0.04f : 0f;
+                le.m_levelSetups[1].m_saturation = tint ? 0.15f : 0f;
+                le.m_levelSetups[1].m_value = tint ? 0.04f : 0f;
+                le.m_levelSetups[1].m_setEmissiveColor = false;
             }
         }
 
@@ -897,53 +892,7 @@ namespace AshlandsDvergrMod
             bool coolEnabled = AshlandsDvergrPlugin.EnableCoolVisuals.Value;
             float lightMult = Mathf.Max(0f, AshlandsDvergrPlugin.AuraLightIntensity.Value);
 
-            if (!coolEnabled)
-            {
-                if (_auraLight != null)
-                {
-                    _auraLight.enabled = false;
-                }
-                return;
-            }
-
-            // Apply subtle molten rim/rune emission & armor tint across renderers
-            Color emissionColor = level switch
-            {
-                3 => new Color(2.4f, 0.68f, 0.14f, 1f), // 2-Star Ashlord: bright molten gold-crimson
-                2 => new Color(1.4f, 0.38f, 0.08f, 1f), // 1-Star Flameforged: glowing ember orange
-                _ => new Color(0.55f, 0.16f, 0.04f, 1f) // 0-Star Veteran: warm volcanic ember glow
-            };
-
-            foreach (Renderer r in _character.GetComponentsInChildren<Renderer>())
-            {
-                if (r == null || r.sharedMaterials == null)
-                {
-                    continue;
-                }
-                Material[] mats = r.materials;
-                for (int i = 0; i < mats.Length; i++)
-                {
-                    Material m = mats[i];
-                    if (m == null)
-                    {
-                        continue;
-                    }
-                    if (m.HasProperty("_EmissionColor"))
-                    {
-                        m.EnableKeyword("_EMISSION");
-                        m.SetColor("_EmissionColor", emissionColor);
-                    }
-                    if (level == 1 && m.HasProperty("_Saturation"))
-                    {
-                        m.SetFloat("_Hue", -0.02f);
-                        m.SetFloat("_Saturation", 0.15f);
-                        m.SetFloat("_Value", 0.03f);
-                    }
-                }
-            }
-
-            // Setup or update dynamic forge-ember point light
-            if (lightMult <= 0f)
+            if (!coolEnabled || lightMult <= 0f)
             {
                 if (_auraLight != null)
                 {
@@ -964,19 +913,19 @@ namespace AshlandsDvergrMod
 
             _auraLight.enabled = true;
             _auraLight.color = level >= 3
-                ? new Color(1.0f, 0.55f, 0.15f)
-                : new Color(1.0f, 0.38f, 0.10f);
+                ? new Color(1.0f, 0.68f, 0.35f)
+                : new Color(1.0f, 0.58f, 0.28f);
             _auraLight.range = level switch
             {
-                3 => 5.5f,
-                2 => 4.2f,
-                _ => 3.0f
+                3 => 3.2f,
+                2 => 2.6f,
+                _ => 2.0f
             };
             _baseLightIntensity = (level switch
             {
-                3 => 1.8f,
-                2 => 1.3f,
-                _ => 0.85f
+                3 => 0.85f,
+                2 => 0.55f,
+                _ => 0.30f
             }) * lightMult;
             _auraLight.intensity = _baseLightIntensity;
         }
