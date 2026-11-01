@@ -37,9 +37,9 @@ A config text file is automatically generated at `BepInEx/config/com.valheim.ash
 ## Default: 3.0 (3x faster spawns, 3x capacity).
 ## Range: 0.5 to 10.0
 # Setting type: Single
-# Default value: 3
+# Default value: 2
 # Acceptable value range: From 0.5 to 10
-SpawnRateMultiplier = 3
+SpawnRateMultiplier = 2
 
 ## Base respawn interval in minutes for Ashlands Dvergr ruin/camp spawners (divided by SpawnRateMultiplier).
 ## Default: 6.7 minutes.
@@ -78,9 +78,9 @@ AmbientSpawnInterval = 100
 ## Default: 50%.
 ## Range: 1.0 to 100.0
 # Setting type: Single
-# Default value: 50
+# Default value: 25
 # Acceptable value range: From 1 to 100
-AmbientSpawnChance = 50
+AmbientSpawnChance = 25
 
 ## Minimum group size for ambient Ashlands Dvergr patrols.
 ## Default: 2.
@@ -154,9 +154,9 @@ MaxLevel = 3
 ## Default: 50%.
 ## Range: 0.0 to 100.0
 # Setting type: Single
-# Default value: 50
+# Default value: 20
 # Acceptable value range: From 0 to 100
-LevelUpChance = 50
+LevelUpChance = 20
 
 ## Visual body scale multiplier for 1-star Ashlands Dvergrs.
 ## Default: 1.1 (10% larger).
@@ -170,9 +170,9 @@ VisualScale1Star = 1.1
 ## Default: 1.2 (20% larger).
 ## Range: 1.0 to 2.0
 # Setting type: Single
-# Default value: 1.2
+# Default value: 1.15
 # Acceptable value range: From 1 to 2
-VisualScale2Star = 1.2
+VisualScale2Star = 1.15
 ```
 
 ---
