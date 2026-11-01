@@ -413,18 +413,18 @@ namespace AshlandsDvergrMod
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s1,
-                    m_hue = tint ? -0.02f : 0f,
-                    m_saturation = tint ? 0.08f : 0f,
-                    m_value = tint ? 0.02f : 0f,
+                    m_hue = tint ? -0.05f : 0f,
+                    m_saturation = tint ? 0.22f : 0f,
+                    m_value = tint ? 0.05f : 0f,
                     m_setEmissiveColor = false
                 });
             }
             else
             {
                 le.m_levelSetups[0].m_scale = s1;
-                le.m_levelSetups[0].m_hue = tint ? -0.02f : 0f;
-                le.m_levelSetups[0].m_saturation = tint ? 0.08f : 0f;
-                le.m_levelSetups[0].m_value = tint ? 0.02f : 0f;
+                le.m_levelSetups[0].m_hue = tint ? -0.05f : 0f;
+                le.m_levelSetups[0].m_saturation = tint ? 0.22f : 0f;
+                le.m_levelSetups[0].m_value = tint ? 0.05f : 0f;
                 le.m_levelSetups[0].m_setEmissiveColor = false;
             }
 
@@ -433,18 +433,18 @@ namespace AshlandsDvergrMod
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s2,
-                    m_hue = tint ? -0.04f : 0f,
-                    m_saturation = tint ? 0.15f : 0f,
-                    m_value = tint ? 0.04f : 0f,
+                    m_hue = tint ? -0.12f : 0f,
+                    m_saturation = tint ? 0.38f : 0f,
+                    m_value = tint ? 0.02f : 0f,
                     m_setEmissiveColor = false
                 });
             }
             else if (le.m_levelSetups.Count >= 2)
             {
                 le.m_levelSetups[1].m_scale = s2;
-                le.m_levelSetups[1].m_hue = tint ? -0.04f : 0f;
-                le.m_levelSetups[1].m_saturation = tint ? 0.15f : 0f;
-                le.m_levelSetups[1].m_value = tint ? 0.04f : 0f;
+                le.m_levelSetups[1].m_hue = tint ? -0.12f : 0f;
+                le.m_levelSetups[1].m_saturation = tint ? 0.38f : 0f;
+                le.m_levelSetups[1].m_value = tint ? 0.02f : 0f;
                 le.m_levelSetups[1].m_setEmissiveColor = false;
             }
         }
@@ -799,20 +799,39 @@ namespace AshlandsDvergrMod
                 __instance.m_damage.Modify(mult);
             }
         }
+
+        [HarmonyPatch(typeof(VisEquipment), "UpdateEquipmentVisuals")]
+        [HarmonyPostfix]
+        private static void VisEquipment_UpdateEquipmentVisuals_Postfix(VisEquipment __instance)
+        {
+            if (__instance == null)
+            {
+                return;
+            }
+            AshlandsDvergrEnhancer enhancer = __instance.GetComponent<AshlandsDvergrEnhancer>();
+            if (enhancer != null)
+            {
+                enhancer.CheckEquipmentVisualsChanged();
+            }
+        }
     }
 
     /// <summary>
     /// Component attached to Ashlands Dvergr instances to drive slow passive regeneration
-    /// and flameforged visual enhancements (molten armor glow + flickering forge aura light).
+    /// and star-tiered visual enhancements that preserve original texture details.
     /// </summary>
     internal class AshlandsDvergrEnhancer : MonoBehaviour
     {
+        private static readonly Dictionary<int, Color> OriginalMaterialColors = new Dictionary<int, Color>();
+
         private Character _character;
         private ZNetView _nview;
         private Light _auraLight;
         private float _healTimer;
         private float _noiseSeed;
         private float _baseLightIntensity = 1.0f;
+        private int _lastRendererCount;
+        private int _lastAppliedLevel;
 
         private void Awake()
         {
@@ -824,6 +843,20 @@ namespace AshlandsDvergrMod
         private void Start()
         {
             ApplyCoolVisuals();
+        }
+
+        internal void CheckEquipmentVisualsChanged()
+        {
+            if (_character == null)
+            {
+                return;
+            }
+            Renderer[] renderers = _character.GetComponentsInChildren<Renderer>(includeInactive: true);
+            int level = Mathf.Max(1, _character.GetLevel());
+            if (renderers.Length != _lastRendererCount || level != _lastAppliedLevel)
+            {
+                ApplyCoolVisuals();
+            }
         }
 
         private void Update()
@@ -882,6 +915,7 @@ namespace AshlandsDvergrMod
 
             AshlandsDvergrPlugin.EnsureVisualStarSetups(_character);
             int level = Mathf.Max(1, _character.GetLevel());
+            _lastAppliedLevel = level;
 
             LevelEffects le = _character.GetComponentInChildren<LevelEffects>();
             if (le != null)
@@ -891,6 +925,78 @@ namespace AshlandsDvergrMod
 
             bool coolEnabled = AshlandsDvergrPlugin.EnableCoolVisuals.Value;
             float lightMult = Mathf.Max(0f, AshlandsDvergrPlugin.AuraLightIntensity.Value);
+
+            Renderer[] renderers = _character.GetComponentsInChildren<Renderer>(includeInactive: true);
+            _lastRendererCount = renderers.Length;
+
+            // Star-specific multiplicative albedo tint + subtle ember shadow sheen:
+            // Multiply preserves 100% of original texture detail, stitching, beard strands, and shading
+            // while making 0-star, 1-star, and 2-star Dvergrs clearly distinct.
+            Color colorMult = !coolEnabled ? Color.white : (level switch
+            {
+                3 => new Color(1.30f, 0.58f, 0.48f, 1f), // 2-Star Ashlord: deep crimson-obsidian & blood-bronze
+                2 => new Color(1.22f, 0.88f, 0.58f, 1f), // 1-Star Flameforged: warm golden-amber & copper-bronze
+                _ => new Color(1.04f, 0.96f, 0.92f, 1f)  // 0-Star Veteran: natural Dvergr colors with subtle ash warmth
+            });
+
+            Color subtleEmission = !coolEnabled ? Color.black : (level switch
+            {
+                3 => new Color(0.28f, 0.05f, 0.02f, 1f), // 2-Star: rich crimson ember undertone (never washes out texture)
+                2 => new Color(0.16f, 0.06f, 0.01f, 1f), // 1-Star: warm golden-orange ember undertone
+                _ => new Color(0.04f, 0.015f, 0.005f, 1f) // 0-Star: faint warm hearth sheen
+            });
+
+            float hue = !coolEnabled ? 0f : (level == 3 ? -0.12f : (level == 2 ? -0.05f : 0f));
+            float sat = !coolEnabled ? 0f : (level == 3 ? 0.35f : (level == 2 ? 0.20f : 0.04f));
+            float val = !coolEnabled ? 0f : (level == 3 ? 0.02f : (level == 2 ? 0.05f : 0f));
+
+            foreach (Renderer r in renderers)
+            {
+                if (r == null || (!(r is SkinnedMeshRenderer) && !(r is MeshRenderer)) || r.sharedMaterials == null)
+                {
+                    continue;
+                }
+                Material[] mats = r.materials;
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    Material m = mats[i];
+                    if (m == null)
+                    {
+                        continue;
+                    }
+                    int matId = m.GetInstanceID();
+                    if (m.HasProperty("_Color"))
+                    {
+                        if (!OriginalMaterialColors.TryGetValue(matId, out Color origColor))
+                        {
+                            origColor = m.GetColor("_Color");
+                            OriginalMaterialColors[matId] = origColor;
+                        }
+                        m.SetColor("_Color", new Color(
+                            origColor.r * colorMult.r,
+                            origColor.g * colorMult.g,
+                            origColor.b * colorMult.b,
+                            origColor.a));
+                    }
+                    if (m.HasProperty("_Hue"))
+                    {
+                        m.SetFloat("_Hue", hue);
+                    }
+                    if (m.HasProperty("_Saturation"))
+                    {
+                        m.SetFloat("_Saturation", sat);
+                    }
+                    if (m.HasProperty("_Value"))
+                    {
+                        m.SetFloat("_Value", val);
+                    }
+                    if (m.HasProperty("_EmissionColor"))
+                    {
+                        m.EnableKeyword("_EMISSION");
+                        m.SetColor("_EmissionColor", subtleEmission);
+                    }
+                }
+            }
 
             if (!coolEnabled || lightMult <= 0f)
             {
@@ -912,20 +1018,23 @@ namespace AshlandsDvergrMod
             }
 
             _auraLight.enabled = true;
-            _auraLight.color = level >= 3
-                ? new Color(1.0f, 0.68f, 0.35f)
-                : new Color(1.0f, 0.58f, 0.28f);
+            _auraLight.color = level switch
+            {
+                3 => new Color(1.0f, 0.28f, 0.12f), // 2-Star: crimson-ember light
+                2 => new Color(1.0f, 0.65f, 0.22f), // 1-Star: golden-amber light
+                _ => new Color(1.0f, 0.52f, 0.25f)  // 0-Star: soft warm forge light
+            };
             _auraLight.range = level switch
             {
-                3 => 3.2f,
-                2 => 2.6f,
-                _ => 2.0f
+                3 => 3.8f,
+                2 => 3.0f,
+                _ => 2.2f
             };
             _baseLightIntensity = (level switch
             {
-                3 => 0.85f,
-                2 => 0.55f,
-                _ => 0.30f
+                3 => 1.15f,
+                2 => 0.80f,
+                _ => 0.40f
             }) * lightMult;
             _auraLight.intensity = _baseLightIntensity;
         }
