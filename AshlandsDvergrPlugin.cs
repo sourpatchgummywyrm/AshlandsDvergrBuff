@@ -244,6 +244,7 @@ namespace AshlandsDvergrMod
             if (Environment.GetEnvironmentVariable("RENDER_DVERGR_VALIDATION") == "1")
             {
                 Runtime.MakeAllAssetsLoadable();
+                StartCoroutine(RenderDvergrValidationCoroutine());
             }
 
             new Harmony(PluginGuid).PatchAll(typeof(AshlandsDvergrPlugin));
@@ -824,23 +825,12 @@ namespace AshlandsDvergrMod
             }
         }
 
-        [HarmonyPatch(typeof(FejdStartup), "Start")]
-        [HarmonyPostfix]
-        private static void FejdStartup_Start_Postfix(FejdStartup __instance)
-        {
-            if (Environment.GetEnvironmentVariable("RENDER_DVERGR_VALIDATION") == "1" && __instance != null)
-            {
-                __instance.StartCoroutine(RenderDvergrValidationCoroutine());
-            }
-        }
-
         private static IEnumerator RenderDvergrValidationCoroutine()
         {
-            yield return new WaitForSeconds(1.5f);
+            yield return new WaitForSeconds(1.0f);
             Log.LogInfo("=== Starting DvergerAshlands Visual Validation Render ===");
             try
             {
-                Runtime.MakeAllAssetsLoadable();
                 if (!AssetID.TryParse("2ece1cf15f2885a4da6da84af9d5c542", out AssetID dvergrAssetId))
                 {
                     Log.LogError("Failed to parse DvergerAshlands AssetID");
@@ -919,6 +909,19 @@ namespace AshlandsDvergrMod
                     }
                 }
 
+                VisEquipment prefabVisEq = prefab.GetComponent<VisEquipment>();
+                if (prefabVisEq != null)
+                {
+                    Log.LogInfo($"[Prefab VisEquipment] rightHand={prefabVisEq.m_rightHand?.name}, leftHand={prefabVisEq.m_leftHand?.name}, helmet={prefabVisEq.m_helmet?.name}, backBow={prefabVisEq.m_backBow?.name}");
+                }
+                foreach (GameObject itemPrefab in equipItems)
+                {
+                    List<string> childNames = new List<string>();
+                    foreach (Transform t in itemPrefab.GetComponentsInChildren<Transform>(includeInactive: true))
+                        childNames.Add(t.name);
+                    Log.LogInfo($"[EquipItem {itemPrefab.name}] children=[{string.Join(", ", childNames)}]");
+                }
+
                 Transform visualTemplate = prefab.transform.Find("Visual");
                 if (visualTemplate == null)
                 {
@@ -932,6 +935,8 @@ namespace AshlandsDvergrMod
                 float[] xOffsets = { -1.65f, 0f, 1.65f };
                 float[] scales = { 1.0f, VisualScale1Star.Value, VisualScale2Star.Value };
 
+                string rightHandBoneName = prefabVisEq?.m_rightHand != null ? prefabVisEq.m_rightHand.name : "RightHand_Attach";
+
                 for (int i = 0; i < 3; i++)
                 {
                     int level = i + 1;
@@ -943,6 +948,18 @@ namespace AshlandsDvergrMod
                     SkinnedMeshRenderer bodySmr = model.GetComponentInChildren<SkinnedMeshRenderer>(includeInactive: true);
                     if (bodySmr != null)
                     {
+                        Transform rightHand = null;
+                        foreach (Transform t in model.GetComponentsInChildren<Transform>(includeInactive: true))
+                        {
+                            if (string.Equals(t.name, rightHandBoneName, StringComparison.OrdinalIgnoreCase) ||
+                                (rightHand == null && t.name.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0))
+                            {
+                                rightHand = t;
+                                if (string.Equals(t.name, rightHandBoneName, StringComparison.OrdinalIgnoreCase))
+                                    break;
+                            }
+                        }
+
                         foreach (GameObject itemPrefab in equipItems)
                         {
                             Transform attachSkin = itemPrefab.transform.Find("attach_skin");
@@ -954,16 +971,31 @@ namespace AshlandsDvergrMod
                                 {
                                     smr.rootBone = bodySmr.rootBone;
                                     smr.bones = bodySmr.bones;
-                                    if (i == 0)
+                                }
+                            }
+
+                            Transform attachWeapon = itemPrefab.transform.Find("attach") ?? itemPrefab.transform.Find("attach_r.hand");
+                            if (attachWeapon != null && rightHand != null)
+                            {
+                                GameObject weaponInst = UnityEngine.Object.Instantiate(attachWeapon.gameObject);
+                                weaponInst.name = "attach_" + itemPrefab.name;
+                                weaponInst.transform.SetParent(rightHand, worldPositionStays: true);
+                                weaponInst.transform.localPosition = Vector3.zero;
+                                weaponInst.transform.localRotation = Quaternion.identity;
+                                weaponInst.SetActive(true);
+                                Transform debugCube = weaponInst.transform.Find("Cube");
+                                if (debugCube != null)
+                                {
+                                    debugCube.gameObject.SetActive(false);
+                                }
+                                if (i == 0)
+                                {
+                                    foreach (Renderer wr in weaponInst.GetComponentsInChildren<Renderer>(includeInactive: true))
                                     {
-                                        foreach (Material m in smr.sharedMaterials)
+                                        foreach (Material m in wr.sharedMaterials)
                                         {
                                             if (m == null) continue;
-                                            int propCount = m.shader != null ? m.shader.GetPropertyCount() : 0;
-                                            List<string> props = new List<string>();
-                                            for (int p = 0; p < propCount; p++)
-                                                props.Add($"{m.shader.GetPropertyName(p)}({m.shader.GetPropertyType(p)})");
-                                            Log.LogInfo($"[Attached {itemPrefab.name} Renderer] {smr.name} | Mat={m.name} | Shader={m.shader?.name} | Props=[{string.Join(", ", props)}]");
+                                            Log.LogInfo($"[Attached {itemPrefab.name} Weapon] {wr.name} (active={wr.gameObject.activeSelf}, scale={weaponInst.transform.localScale}, {wr.GetType().Name}) | Mat={m.name} | Shader={m.shader?.name} | HasEmissiveMap={m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap") != null}");
                                         }
                                     }
                                 }
@@ -1018,8 +1050,8 @@ namespace AshlandsDvergrMod
             {
                 Log.LogError($"Validation render failed: {ex}");
             }
-            yield return new WaitForSeconds(0.5f);
-            Application.Quit();
+            System.Diagnostics.Process.GetCurrentProcess().Kill();
+            yield break;
         }
     }
 
@@ -1134,12 +1166,58 @@ namespace AshlandsDvergrMod
             _lastRendererCount = ApplyStyleToHierarchy(_character.transform, level, ref _auraLight, out _baseLightIntensity);
         }
 
+        private static bool IsWeaponRenderer(Renderer r, Material m, VisEquipment visEq)
+        {
+            if (r == null)
+            {
+                return false;
+            }
+            if (visEq != null)
+            {
+                Transform rt = r.transform;
+                if ((visEq.m_rightHand != null && rt.IsChildOf(visEq.m_rightHand)) ||
+                    (visEq.m_leftHand != null && rt.IsChildOf(visEq.m_leftHand)) ||
+                    (visEq.m_backMelee != null && rt.IsChildOf(visEq.m_backMelee)) ||
+                    (visEq.m_backBow != null && rt.IsChildOf(visEq.m_backBow)) ||
+                    (visEq.m_backTool != null && rt.IsChildOf(visEq.m_backTool)) ||
+                    (visEq.m_backAtgeir != null && rt.IsChildOf(visEq.m_backAtgeir)))
+                {
+                    return true;
+                }
+            }
+            string rName = r.name ?? string.Empty;
+            string mName = m != null ? (m.name ?? string.Empty) : string.Empty;
+            if (rName.IndexOf("Arbalest", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                rName.IndexOf("Staff", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                rName.IndexOf("Crossbow", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                mName.IndexOf("Arbalest", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                mName.IndexOf("Staff", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                mName.IndexOf("Crossbow", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+            for (Transform t = r.transform; t != null; t = t.parent)
+            {
+                string tName = t.name ?? string.Empty;
+                if (tName.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    tName.IndexOf("BackBow", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    tName.IndexOf("BackMelee", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    tName.IndexOf("BackTool", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    tName.IndexOf("attach_Dverger", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         internal static int ApplyStyleToHierarchy(Transform root, int level, ref Light auraLight, out float baseLightIntensity)
         {
             baseLightIntensity = 0f;
             bool coolEnabled = AshlandsDvergrPlugin.EnableCoolVisuals.Value;
             float lightMult = Mathf.Max(0f, AshlandsDvergrPlugin.AuraLightIntensity.Value);
 
+            VisEquipment visEq = root.GetComponentInParent<VisEquipment>() ?? root.GetComponentInChildren<VisEquipment>();
             Renderer[] renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
 
             // Armor/cloak/hat diffuse tint (pure RGB multiplication with _Hue/_Sat/_Val = 0 avoids Custom/Creature HSV wraparound artifacts
@@ -1159,6 +1237,11 @@ namespace AshlandsDvergrMod
                 _ => Color.white                         // 0-Star: original blue-teal skin
             });
 
+            // Weapon tint (subtle arcane-forged sheen on 2-star weapons while keeping wood/metal detail)
+            Color weaponColorMult = (!coolEnabled || level < 3)
+                ? Color.white
+                : new Color(1.08f, 0.92f, 1.18f, 1f);
+
             foreach (Renderer r in renderers)
             {
                 if (r == null || (!(r is SkinnedMeshRenderer) && !(r is MeshRenderer)) || r.sharedMaterials == null)
@@ -1166,6 +1249,7 @@ namespace AshlandsDvergrMod
                     continue;
                 }
                 Material[] mats = r.materials;
+                bool isWeaponRenderer = false;
                 for (int i = 0; i < mats.Length; i++)
                 {
                     Material m = mats[i];
@@ -1175,7 +1259,12 @@ namespace AshlandsDvergrMod
                     }
                     int matId = m.GetInstanceID();
                     bool hasEmissionMap = m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap") != null;
-                    bool isBodyMat = hasEmissionMap || m.name.IndexOf("Body", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool isBodyMat = m.name.IndexOf("Body", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool isWeaponMat = !isBodyMat && IsWeaponRenderer(r, m, visEq);
+                    if (isWeaponMat)
+                    {
+                        isWeaponRenderer = true;
+                    }
 
                     if (m.HasProperty("_Color"))
                     {
@@ -1184,7 +1273,7 @@ namespace AshlandsDvergrMod
                             origColor = m.GetColor("_Color");
                             OriginalMaterialColors[matId] = origColor;
                         }
-                        Color mult = isBodyMat ? bodyColorMult : armorColorMult;
+                        Color mult = isBodyMat ? bodyColorMult : (isWeaponMat ? weaponColorMult : armorColorMult);
                         m.SetColor("_Color", new Color(
                             origColor.r * mult.r,
                             origColor.g * mult.g,
@@ -1214,21 +1303,75 @@ namespace AshlandsDvergrMod
                             OriginalMaterialEmissions[matId] = origEmission;
                         }
 
-                        if (hasEmissionMap)
+                        if (isBodyMat && hasEmissionMap)
                         {
-                            // Masked emission (e.g., DvergerBody eyes): 0-star cyan, 1-star fiery amber-gold, 2-star blazing crimson
+                            // Masked emission on DvergerBody eyes:
+                            // Negative G on 1-star/2-star cancels the cyan green baked into _MainTex exclusively on the eye mask!
                             Color eyeEmission = !coolEnabled ? origEmission : (level switch
                             {
-                                3 => new Color(6.5f, 0.05f, 0.15f, 1f),
-                                2 => new Color(4.5f, 1.10f, 0.00f, 1f),
-                                _ => origEmission
+                                3 => new Color(0.80f, -0.65f, 1.45f, 1f), // 2-Star: vivid royal purple eyes
+                                2 => new Color(1.20f, -0.15f, -0.85f, 1f), // 1-Star: fiery golden-amber eyes
+                                _ => origEmission                          // 0-Star: original cyan eyes
                             });
                             m.SetColor("_EmissionColor", eyeEmission);
+                        }
+                        else if (isWeaponMat)
+                        {
+                            if (coolEnabled && level >= 3)
+                            {
+                                // Subtle purple-arcane weapon glow on 2-star Dvergrs
+                                m.EnableKeyword("_EMISSION");
+                                Color wepGlow = hasEmissionMap
+                                    ? new Color(1.60f, 0.35f, 2.40f, 1f)
+                                    : new Color(0.22f, 0.06f, 0.34f, 1f);
+                                m.SetColor("_EmissionColor", wepGlow);
+                            }
+                            else
+                            {
+                                m.SetColor("_EmissionColor", origEmission);
+                            }
                         }
                         else
                         {
                             // Unmasked cloth/armor material: keep emission black so textures never wash out
                             m.SetColor("_EmissionColor", Color.black);
+                        }
+                    }
+                }
+
+                if (isWeaponRenderer)
+                {
+                    Transform existingWepLight = r.transform.Find("AshlandsDvergr_WeaponGlow");
+                    if (coolEnabled && level >= 3 && lightMult > 0f)
+                    {
+                        Light wepLight;
+                        if (existingWepLight == null)
+                        {
+                            GameObject wlObj = new GameObject("AshlandsDvergr_WeaponGlow");
+                            wlObj.transform.SetParent(r.transform, worldPositionStays: false);
+                            wlObj.transform.localPosition = Vector3.zero;
+                            wepLight = wlObj.AddComponent<Light>();
+                            wepLight.type = LightType.Point;
+                            wepLight.shadows = LightShadows.None;
+                        }
+                        else
+                        {
+                            wepLight = existingWepLight.GetComponent<Light>();
+                        }
+                        if (wepLight != null)
+                        {
+                            wepLight.enabled = true;
+                            wepLight.color = new Color(0.72f, 0.30f, 1.0f);
+                            wepLight.range = 1.15f;
+                            wepLight.intensity = 0.28f * lightMult;
+                        }
+                    }
+                    else if (existingWepLight != null)
+                    {
+                        Light wepLight = existingWepLight.GetComponent<Light>();
+                        if (wepLight != null)
+                        {
+                            wepLight.enabled = false;
                         }
                     }
                 }
@@ -1256,9 +1399,9 @@ namespace AshlandsDvergrMod
             auraLight.enabled = true;
             auraLight.color = level switch
             {
-                3 => new Color(1.0f, 0.25f, 0.10f), // 2-Star: subtle crimson-ember aura
-                2 => new Color(1.0f, 0.68f, 0.22f), // 1-Star: subtle golden-amber aura
-                _ => new Color(0.85f, 0.92f, 1.0f)  // 0-Star: faint cool mystic glow
+                3 => new Color(0.82f, 0.28f, 0.95f), // 2-Star: subtle arcane-purple & ember aura
+                2 => new Color(1.0f, 0.68f, 0.22f),  // 1-Star: subtle golden-amber aura
+                _ => new Color(0.85f, 0.92f, 1.0f)   // 0-Star: faint cool mystic glow
             };
             auraLight.range = level switch
             {
