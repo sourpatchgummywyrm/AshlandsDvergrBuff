@@ -1,6 +1,6 @@
 # Ashlands Dvergr Buff
 
-A Valheim BepInEx mod that turns Ashlands Dvergrs into the formidable allies (or deadly adversaries) they were meant to be in the harsh southern biome.
+A Valheim BepInEx mod to make it so Ashlands Dvergrs have that iron in them.
 
 ## Features
 
