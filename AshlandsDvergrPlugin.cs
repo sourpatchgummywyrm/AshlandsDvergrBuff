@@ -1,10 +1,12 @@
 using System;
 using System.IO;
+using System.Collections;
 using System.Collections.Generic;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using SoftReferenceableAssets;
 using UnityEngine;
 
 namespace AshlandsDvergrMod
@@ -239,6 +241,11 @@ namespace AshlandsDvergrMod
             // Watch .cfg file on disk for manual edits in any text editor
             SetupConfigFileWatcher();
 
+            if (Environment.GetEnvironmentVariable("RENDER_DVERGR_VALIDATION") == "1")
+            {
+                Runtime.MakeAllAssetsLoadable();
+            }
+
             new Harmony(PluginGuid).PatchAll(typeof(AshlandsDvergrPlugin));
             Log.LogInfo($"{PluginName} {PluginVersion} loaded.");
         }
@@ -408,23 +415,25 @@ namespace AshlandsDvergrMod
             float s2 = Mathf.Max(s1, VisualScale2Star.Value);
             bool tint = EnableCoolVisuals.Value;
 
+            // Keep LevelEffects scale synced with star level, but leave material styling to ApplyStyleToHierarchy
+            // so skin/eyes (DvergerBody) and equipment/cloaks (VisEquipment) are styled separately without washing out textures.
             if (le.m_levelSetups.Count == 0)
             {
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s1,
-                    m_hue = tint ? -0.05f : 0f,
-                    m_saturation = tint ? 0.22f : 0f,
-                    m_value = tint ? 0.05f : 0f,
+                    m_hue = 0f,
+                    m_saturation = 0f,
+                    m_value = 0f,
                     m_setEmissiveColor = false
                 });
             }
             else
             {
                 le.m_levelSetups[0].m_scale = s1;
-                le.m_levelSetups[0].m_hue = tint ? -0.05f : 0f;
-                le.m_levelSetups[0].m_saturation = tint ? 0.22f : 0f;
-                le.m_levelSetups[0].m_value = tint ? 0.05f : 0f;
+                le.m_levelSetups[0].m_hue = 0f;
+                le.m_levelSetups[0].m_saturation = 0f;
+                le.m_levelSetups[0].m_value = 0f;
                 le.m_levelSetups[0].m_setEmissiveColor = false;
             }
 
@@ -433,18 +442,18 @@ namespace AshlandsDvergrMod
                 le.m_levelSetups.Add(new LevelEffects.LevelSetup
                 {
                     m_scale = s2,
-                    m_hue = tint ? -0.12f : 0f,
-                    m_saturation = tint ? 0.38f : 0f,
-                    m_value = tint ? 0.02f : 0f,
+                    m_hue = 0f,
+                    m_saturation = 0f,
+                    m_value = 0f,
                     m_setEmissiveColor = false
                 });
             }
             else if (le.m_levelSetups.Count >= 2)
             {
                 le.m_levelSetups[1].m_scale = s2;
-                le.m_levelSetups[1].m_hue = tint ? -0.12f : 0f;
-                le.m_levelSetups[1].m_saturation = tint ? 0.38f : 0f;
-                le.m_levelSetups[1].m_value = tint ? 0.02f : 0f;
+                le.m_levelSetups[1].m_hue = 0f;
+                le.m_levelSetups[1].m_saturation = 0f;
+                le.m_levelSetups[1].m_value = 0f;
                 le.m_levelSetups[1].m_setEmissiveColor = false;
             }
         }
@@ -814,6 +823,204 @@ namespace AshlandsDvergrMod
                 enhancer.CheckEquipmentVisualsChanged();
             }
         }
+
+        [HarmonyPatch(typeof(FejdStartup), "Start")]
+        [HarmonyPostfix]
+        private static void FejdStartup_Start_Postfix(FejdStartup __instance)
+        {
+            if (Environment.GetEnvironmentVariable("RENDER_DVERGR_VALIDATION") == "1" && __instance != null)
+            {
+                __instance.StartCoroutine(RenderDvergrValidationCoroutine());
+            }
+        }
+
+        private static IEnumerator RenderDvergrValidationCoroutine()
+        {
+            yield return new WaitForSeconds(1.5f);
+            Log.LogInfo("=== Starting DvergerAshlands Visual Validation Render ===");
+            try
+            {
+                Runtime.MakeAllAssetsLoadable();
+                if (!AssetID.TryParse("2ece1cf15f2885a4da6da84af9d5c542", out AssetID dvergrAssetId))
+                {
+                    Log.LogError("Failed to parse DvergerAshlands AssetID");
+                    yield break;
+                }
+                SoftReference<GameObject> dvergrRef = new SoftReference<GameObject>(dvergrAssetId);
+                LoadResult res = dvergrRef.Load();
+                Log.LogInfo($"Loaded DvergerAshlands SoftReference: {res}");
+                GameObject prefab = dvergrRef.Asset;
+                if (prefab == null)
+                {
+                    Log.LogError("DvergerAshlands prefab is null");
+                    yield break;
+                }
+
+                // Log all renderers, materials, shaders, and properties on the prefab
+                foreach (Renderer r in prefab.GetComponentsInChildren<Renderer>(includeInactive: true))
+                {
+                    foreach (Material m in r.sharedMaterials)
+                    {
+                        if (m == null) continue;
+                        int propCount = m.shader != null ? m.shader.GetPropertyCount() : 0;
+                        List<string> props = new List<string>();
+                        for (int p = 0; p < propCount; p++)
+                        {
+                            props.Add($"{m.shader.GetPropertyName(p)}({m.shader.GetPropertyType(p)})");
+                        }
+                        Log.LogInfo($"[Prefab Renderer] {r.name} (active={r.gameObject.activeInHierarchy}, enabled={r.enabled}, {r.GetType().Name}) | Mat={m.name} | Shader={m.shader?.name} | Props=[{string.Join(", ", props)}]");
+                    }
+                }
+
+                List<GameObject> equipItems = new List<GameObject>();
+                Humanoid hum = prefab.GetComponent<Humanoid>();
+                if (hum != null)
+                {
+                    if (hum.m_defaultItems != null)
+                    {
+                        foreach (var go in hum.m_defaultItems)
+                        {
+                            if (go != null)
+                            {
+                                Log.LogInfo($"[Humanoid defaultItem] {go.name}");
+                                equipItems.Add(go);
+                            }
+                        }
+                    }
+                    if (hum.m_randomArmor != null && hum.m_randomArmor.Length > 0)
+                    {
+                        foreach (var go in hum.m_randomArmor)
+                            if (go != null) Log.LogInfo($"[Humanoid randomArmor] {go.name}");
+                        if (hum.m_randomArmor[0] != null) equipItems.Add(hum.m_randomArmor[0]);
+                    }
+                    if (hum.m_randomSets != null && hum.m_randomSets.Length > 0)
+                    {
+                        foreach (var set in hum.m_randomSets)
+                        {
+                            if (set?.m_items == null) continue;
+                            foreach (var go in set.m_items)
+                                if (go != null) Log.LogInfo($"[Humanoid randomSet {set.m_name}] {go.name}");
+                        }
+                        if (hum.m_randomSets[0]?.m_items != null)
+                        {
+                            foreach (var go in hum.m_randomSets[0].m_items)
+                                if (go != null) equipItems.Add(go);
+                        }
+                    }
+                }
+
+                LevelEffects lePrefab = prefab.GetComponentInChildren<LevelEffects>(includeInactive: true);
+                if (lePrefab != null && lePrefab.m_levelSetups != null)
+                {
+                    for (int s = 0; s < lePrefab.m_levelSetups.Count; s++)
+                    {
+                        var ls = lePrefab.m_levelSetups[s];
+                        Log.LogInfo($"[Prefab LevelSetup {s}] scale={ls.m_scale}, hue={ls.m_hue}, sat={ls.m_saturation}, val={ls.m_value}, setEmissive={ls.m_setEmissiveColor}, emissive={ls.m_emissiveColor}, enableObj={ls.m_enableObject?.name}");
+                    }
+                }
+
+                Transform visualTemplate = prefab.transform.Find("Visual");
+                if (visualTemplate == null)
+                {
+                    visualTemplate = prefab.transform;
+                }
+
+                Vector3 stageOrigin = new Vector3(0f, 500f, 0f);
+                GameObject stageRoot = new GameObject("DvergrValidationStage");
+                stageRoot.transform.position = stageOrigin;
+
+                float[] xOffsets = { -1.65f, 0f, 1.65f };
+                float[] scales = { 1.0f, VisualScale1Star.Value, VisualScale2Star.Value };
+
+                for (int i = 0; i < 3; i++)
+                {
+                    int level = i + 1;
+                    GameObject model = UnityEngine.Object.Instantiate(visualTemplate.gameObject, stageRoot.transform);
+                    model.transform.localPosition = new Vector3(xOffsets[i], 0f, 0f);
+                    model.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+                    model.transform.localScale = Vector3.one * scales[i];
+
+                    SkinnedMeshRenderer bodySmr = model.GetComponentInChildren<SkinnedMeshRenderer>(includeInactive: true);
+                    if (bodySmr != null)
+                    {
+                        foreach (GameObject itemPrefab in equipItems)
+                        {
+                            Transform attachSkin = itemPrefab.transform.Find("attach_skin");
+                            if (attachSkin != null)
+                            {
+                                GameObject skinInst = UnityEngine.Object.Instantiate(attachSkin.gameObject, bodySmr.transform.parent);
+                                skinInst.SetActive(true);
+                                foreach (SkinnedMeshRenderer smr in skinInst.GetComponentsInChildren<SkinnedMeshRenderer>(includeInactive: true))
+                                {
+                                    smr.rootBone = bodySmr.rootBone;
+                                    smr.bones = bodySmr.bones;
+                                    if (i == 0)
+                                    {
+                                        foreach (Material m in smr.sharedMaterials)
+                                        {
+                                            if (m == null) continue;
+                                            int propCount = m.shader != null ? m.shader.GetPropertyCount() : 0;
+                                            List<string> props = new List<string>();
+                                            for (int p = 0; p < propCount; p++)
+                                                props.Add($"{m.shader.GetPropertyName(p)}({m.shader.GetPropertyType(p)})");
+                                            Log.LogInfo($"[Attached {itemPrefab.name} Renderer] {smr.name} | Mat={m.name} | Shader={m.shader?.name} | Props=[{string.Join(", ", props)}]");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Light aura = null;
+                    AshlandsDvergrEnhancer.ApplyStyleToHierarchy(model.transform, level, ref aura, out _);
+                }
+
+                // Studio lighting for validation render
+                GameObject keyLightObj = new GameObject("KeyLight");
+                keyLightObj.transform.SetParent(stageRoot.transform, false);
+                keyLightObj.transform.localPosition = new Vector3(1.5f, 3.2f, -3.5f);
+                keyLightObj.transform.LookAt(stageOrigin + new Vector3(0f, 1.1f, 0f));
+                Light keyLight = keyLightObj.AddComponent<Light>();
+                keyLight.type = LightType.Directional;
+                keyLight.color = new Color(1.0f, 0.96f, 0.90f);
+                keyLight.intensity = 1.1f;
+
+                GameObject camObj = new GameObject("ValidationCamera");
+                camObj.transform.SetParent(stageRoot.transform, false);
+                camObj.transform.localPosition = new Vector3(0f, 1.15f, -3.6f);
+                camObj.transform.LookAt(stageOrigin + new Vector3(0f, 1.05f, 0f));
+
+                Camera cam = camObj.AddComponent<Camera>();
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0.11f, 0.10f, 0.12f, 1f);
+                cam.fieldOfView = 42f;
+                cam.nearClipPlane = 0.1f;
+                cam.farClipPlane = 50f;
+
+                int width = 1536;
+                int height = 768;
+                RenderTexture rt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                cam.targetTexture = rt;
+                cam.Render();
+
+                RenderTexture.active = rt;
+                Texture2D tex = new Texture2D(width, height, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                tex.Apply();
+                RenderTexture.active = null;
+
+                byte[] png = ImageConversion.EncodeToPNG(tex);
+                string outPath = "/tmp/dvergr_render_validation.png";
+                File.WriteAllBytes(outPath, png);
+                Log.LogInfo($"=== Saved validation render ({png.Length} bytes) to {outPath} ===");
+            }
+            catch (Exception ex)
+            {
+                Log.LogError($"Validation render failed: {ex}");
+            }
+            yield return new WaitForSeconds(0.5f);
+            Application.Quit();
+        }
     }
 
     /// <summary>
@@ -823,6 +1030,7 @@ namespace AshlandsDvergrMod
     internal class AshlandsDvergrEnhancer : MonoBehaviour
     {
         private static readonly Dictionary<int, Color> OriginalMaterialColors = new Dictionary<int, Color>();
+        private static readonly Dictionary<int, Color> OriginalMaterialEmissions = new Dictionary<int, Color>();
 
         private Character _character;
         private ZNetView _nview;
@@ -923,32 +1131,33 @@ namespace AshlandsDvergrMod
                 le.SetupLevelVisualization(level);
             }
 
+            _lastRendererCount = ApplyStyleToHierarchy(_character.transform, level, ref _auraLight, out _baseLightIntensity);
+        }
+
+        internal static int ApplyStyleToHierarchy(Transform root, int level, ref Light auraLight, out float baseLightIntensity)
+        {
+            baseLightIntensity = 0f;
             bool coolEnabled = AshlandsDvergrPlugin.EnableCoolVisuals.Value;
             float lightMult = Mathf.Max(0f, AshlandsDvergrPlugin.AuraLightIntensity.Value);
 
-            Renderer[] renderers = _character.GetComponentsInChildren<Renderer>(includeInactive: true);
-            _lastRendererCount = renderers.Length;
+            Renderer[] renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
 
-            // Star-specific multiplicative albedo tint + subtle ember shadow sheen:
-            // Multiply preserves 100% of original texture detail, stitching, beard strands, and shading
-            // while making 0-star, 1-star, and 2-star Dvergrs clearly distinct.
-            Color colorMult = !coolEnabled ? Color.white : (level switch
+            // Armor/cloak/hat diffuse tint (pure RGB multiplication with _Hue/_Sat/_Val = 0 avoids Custom/Creature HSV wraparound artifacts
+            // and preserves 100% of original texture shading, stitches, and dark folds)
+            Color armorColorMult = !coolEnabled ? Color.white : (level switch
             {
-                3 => new Color(1.30f, 0.58f, 0.48f, 1f), // 2-Star Ashlord: deep crimson-obsidian & blood-bronze
-                2 => new Color(1.22f, 0.88f, 0.58f, 1f), // 1-Star Flameforged: warm golden-amber & copper-bronze
-                _ => new Color(1.04f, 0.96f, 0.92f, 1f)  // 0-Star Veteran: natural Dvergr colors with subtle ash warmth
+                3 => new Color(1.18f, 0.46f, 0.42f, 1f), // 2-Star Ashlord: deep volcanic crimson & charred blood-iron
+                2 => new Color(1.28f, 0.88f, 0.55f, 1f), // 1-Star Flameforged: warm burnished bronze & golden-copper
+                _ => Color.white                         // 0-Star: 100% original Dvergr tunic/armor
             });
 
-            Color subtleEmission = !coolEnabled ? Color.black : (level switch
+            // Body/skin tint (preserves iconic Dvergr blue-slate skin)
+            Color bodyColorMult = !coolEnabled ? Color.white : (level switch
             {
-                3 => new Color(0.28f, 0.05f, 0.02f, 1f), // 2-Star: rich crimson ember undertone (never washes out texture)
-                2 => new Color(0.16f, 0.06f, 0.01f, 1f), // 1-Star: warm golden-orange ember undertone
-                _ => new Color(0.04f, 0.015f, 0.005f, 1f) // 0-Star: faint warm hearth sheen
+                3 => new Color(0.70f, 0.74f, 0.86f, 1f), // 2-Star: dark obsidian-slate skin
+                2 => new Color(0.88f, 0.92f, 1.00f, 1f), // 1-Star: steely slate-blue skin
+                _ => Color.white                         // 0-Star: original blue-teal skin
             });
-
-            float hue = !coolEnabled ? 0f : (level == 3 ? -0.12f : (level == 2 ? -0.05f : 0f));
-            float sat = !coolEnabled ? 0f : (level == 3 ? 0.35f : (level == 2 ? 0.20f : 0.04f));
-            float val = !coolEnabled ? 0f : (level == 3 ? 0.02f : (level == 2 ? 0.05f : 0f));
 
             foreach (Renderer r in renderers)
             {
@@ -965,6 +1174,9 @@ namespace AshlandsDvergrMod
                         continue;
                     }
                     int matId = m.GetInstanceID();
+                    bool hasEmissionMap = m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap") != null;
+                    bool isBodyMat = hasEmissionMap || m.name.IndexOf("Body", StringComparison.OrdinalIgnoreCase) >= 0;
+
                     if (m.HasProperty("_Color"))
                     {
                         if (!OriginalMaterialColors.TryGetValue(matId, out Color origColor))
@@ -972,71 +1184,96 @@ namespace AshlandsDvergrMod
                             origColor = m.GetColor("_Color");
                             OriginalMaterialColors[matId] = origColor;
                         }
+                        Color mult = isBodyMat ? bodyColorMult : armorColorMult;
                         m.SetColor("_Color", new Color(
-                            origColor.r * colorMult.r,
-                            origColor.g * colorMult.g,
-                            origColor.b * colorMult.b,
+                            origColor.r * mult.r,
+                            origColor.g * mult.g,
+                            origColor.b * mult.b,
                             origColor.a));
                     }
+
+                    // Keep _Hue/_Saturation/_Value at 0 so Custom/Creature never triggers HSV channel wraparound banding
                     if (m.HasProperty("_Hue"))
                     {
-                        m.SetFloat("_Hue", hue);
+                        m.SetFloat("_Hue", 0f);
                     }
                     if (m.HasProperty("_Saturation"))
                     {
-                        m.SetFloat("_Saturation", sat);
+                        m.SetFloat("_Saturation", 0f);
                     }
                     if (m.HasProperty("_Value"))
                     {
-                        m.SetFloat("_Value", val);
+                        m.SetFloat("_Value", 0f);
                     }
+
                     if (m.HasProperty("_EmissionColor"))
                     {
-                        m.EnableKeyword("_EMISSION");
-                        m.SetColor("_EmissionColor", subtleEmission);
+                        if (!OriginalMaterialEmissions.TryGetValue(matId, out Color origEmission))
+                        {
+                            origEmission = m.GetColor("_EmissionColor");
+                            OriginalMaterialEmissions[matId] = origEmission;
+                        }
+
+                        if (hasEmissionMap)
+                        {
+                            // Masked emission (e.g., DvergerBody eyes): 0-star cyan, 1-star fiery amber-gold, 2-star blazing crimson
+                            Color eyeEmission = !coolEnabled ? origEmission : (level switch
+                            {
+                                3 => new Color(6.5f, 0.05f, 0.15f, 1f),
+                                2 => new Color(4.5f, 1.10f, 0.00f, 1f),
+                                _ => origEmission
+                            });
+                            m.SetColor("_EmissionColor", eyeEmission);
+                        }
+                        else
+                        {
+                            // Unmasked cloth/armor material: keep emission black so textures never wash out
+                            m.SetColor("_EmissionColor", Color.black);
+                        }
                     }
                 }
             }
 
             if (!coolEnabled || lightMult <= 0f)
             {
-                if (_auraLight != null)
+                if (auraLight != null)
                 {
-                    _auraLight.enabled = false;
+                    auraLight.enabled = false;
                 }
-                return;
+                return renderers.Length;
             }
 
-            if (_auraLight == null)
+            if (auraLight == null)
             {
                 GameObject lightObj = new GameObject("AshlandsDvergr_ForgeAura");
-                lightObj.transform.SetParent(_character.transform, worldPositionStays: false);
-                lightObj.transform.localPosition = new Vector3(0f, 1.3f, 0.15f);
-                _auraLight = lightObj.AddComponent<Light>();
-                _auraLight.type = LightType.Point;
-                _auraLight.shadows = LightShadows.None;
+                lightObj.transform.SetParent(root, worldPositionStays: false);
+                lightObj.transform.localPosition = new Vector3(0f, 1.35f, 0.20f);
+                auraLight = lightObj.AddComponent<Light>();
+                auraLight.type = LightType.Point;
+                auraLight.shadows = LightShadows.None;
             }
 
-            _auraLight.enabled = true;
-            _auraLight.color = level switch
+            auraLight.enabled = true;
+            auraLight.color = level switch
             {
-                3 => new Color(1.0f, 0.28f, 0.12f), // 2-Star: crimson-ember light
-                2 => new Color(1.0f, 0.65f, 0.22f), // 1-Star: golden-amber light
-                _ => new Color(1.0f, 0.52f, 0.25f)  // 0-Star: soft warm forge light
+                3 => new Color(1.0f, 0.25f, 0.10f), // 2-Star: subtle crimson-ember aura
+                2 => new Color(1.0f, 0.68f, 0.22f), // 1-Star: subtle golden-amber aura
+                _ => new Color(0.85f, 0.92f, 1.0f)  // 0-Star: faint cool mystic glow
             };
-            _auraLight.range = level switch
+            auraLight.range = level switch
             {
-                3 => 3.8f,
-                2 => 3.0f,
-                _ => 2.2f
+                3 => 3.5f,
+                2 => 2.8f,
+                _ => 2.0f
             };
-            _baseLightIntensity = (level switch
+            baseLightIntensity = (level switch
             {
-                3 => 1.15f,
-                2 => 0.80f,
-                _ => 0.40f
+                3 => 0.45f,
+                2 => 0.30f,
+                _ => 0.12f
             }) * lightMult;
-            _auraLight.intensity = _baseLightIntensity;
+            auraLight.intensity = baseLightIntensity;
+            return renderers.Length;
         }
     }
 
