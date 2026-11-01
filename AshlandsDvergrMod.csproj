@@ -7,9 +7,16 @@
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <ValheimDir>/Users/arischung/Library/Application Support/Steam/steamapps/common/Valheim</ValheimDir>
-    <ManagedDir>$(ValheimDir)/Valheim.app/Contents/Resources/Data/Managed</ManagedDir>
-    <BepInExCoreDir>$(ValheimDir)/BepInEx/core</BepInExCoreDir>
+
+    <!-- OS-adaptive Steam Valheim paths (can be overridden via -p:ValheimDir="...") -->
+    <ValheimDir Condition="'$(ValheimDir)' == '' and '$(OS)' == 'Windows_NT'">C:\Program Files (x86)\Steam\steamapps\common\Valheim</ValheimDir>
+    <ValheimDir Condition="'$(ValheimDir)' == '' and '$(OS)' != 'Windows_NT'">$(HOME)/Library/Application Support/Steam/steamapps/common/Valheim</ValheimDir>
+
+    <ManagedDir Condition="'$(OS)' == 'Windows_NT'">$(ValheimDir)\valheim_Data\Managed</ManagedDir>
+    <ManagedDir Condition="'$(OS)' != 'Windows_NT'">$(ValheimDir)/Valheim.app/Contents/Resources/Data/Managed</ManagedDir>
+
+    <BepInExCoreDir Condition="'$(OS)' == 'Windows_NT'">$(ValheimDir)\BepInEx\core</BepInExCoreDir>
+    <BepInExCoreDir Condition="'$(OS)' != 'Windows_NT'">$(ValheimDir)/BepInEx/core</BepInExCoreDir>
   </PropertyGroup>
 
   <ItemGroup>

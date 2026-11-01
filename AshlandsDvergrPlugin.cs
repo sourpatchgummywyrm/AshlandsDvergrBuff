@@ -231,6 +231,17 @@ namespace AshlandsDvergrMod
             }
         }
 
+        [HarmonyPatch(typeof(Character), "SetLevel")]
+        [HarmonyPostfix]
+        private static void Character_SetLevel_Postfix(Character __instance)
+        {
+            if (IsAshlandsDvergr(__instance) && __instance.IsOwner())
+            {
+                float maxHp = __instance.GetMaxHealth();
+                __instance.SetHealth(maxHp);
+            }
+        }
+
         [HarmonyPatch(typeof(CreatureSpawner), "Awake")]
         [HarmonyPrefix]
         private static void CreatureSpawner_Awake_Prefix(CreatureSpawner __instance)
