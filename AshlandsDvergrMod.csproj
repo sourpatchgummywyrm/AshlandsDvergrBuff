@@ -50,4 +50,23 @@
     </Reference>
   </ItemGroup>
 
+  <Target Name="PackageThunderstore" AfterTargets="Build">
+    <PropertyGroup>
+      <ThunderstoreStagingDir>$(IntermediateOutputPath)ThunderstorePackage</ThunderstoreStagingDir>
+      <ThunderstoreZipPath>$(ProjectDir)dist/AshlandsDvergrBuff-1.0.0.zip</ThunderstoreZipPath>
+    </PropertyGroup>
+    <ItemGroup>
+      <ThunderstoreFiles Include="$(TargetPath)" />
+      <ThunderstoreFiles Include="$(ProjectDir)manifest.json" />
+      <ThunderstoreFiles Include="$(ProjectDir)icon.png" />
+      <ThunderstoreFiles Include="$(ProjectDir)README.md" />
+      <ThunderstoreFiles Include="$(ProjectDir)CHANGELOG.md" Condition="Exists('$(ProjectDir)CHANGELOG.md')" />
+    </ItemGroup>
+    <RemoveDir Directories="$(ThunderstoreStagingDir)" />
+    <MakeDir Directories="$(ThunderstoreStagingDir);$(ProjectDir)dist" />
+    <Copy SourceFiles="@(ThunderstoreFiles)" DestinationFolder="$(ThunderstoreStagingDir)" />
+    <ZipDirectory SourceDirectory="$(ThunderstoreStagingDir)" DestinationFile="$(ThunderstoreZipPath)" Overwrite="true" />
+    <Copy SourceFiles="$(ThunderstoreZipPath)" DestinationFolder="$(ProjectDir)../dist" Condition="Exists('$(ProjectDir)../dist')" />
+  </Target>
+
 </Project>
