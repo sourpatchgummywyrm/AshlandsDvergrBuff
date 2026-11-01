@@ -53,7 +53,7 @@
   <Target Name="PackageThunderstore" AfterTargets="Build">
     <PropertyGroup>
       <ThunderstoreStagingDir>$(IntermediateOutputPath)ThunderstorePackage</ThunderstoreStagingDir>
-      <ThunderstoreZipPath>$(ProjectDir)dist/AshlandsDvergrBuff-1.0.0.zip</ThunderstoreZipPath>
+      <ThunderstoreZipPath>$(ProjectDir)AshlandsDvergrBuff-1.0.0.zip</ThunderstoreZipPath>
     </PropertyGroup>
     <ItemGroup>
       <ThunderstoreFiles Include="$(TargetPath)" />
@@ -64,8 +64,10 @@
     </ItemGroup>
     <RemoveDir Directories="$(ThunderstoreStagingDir)" />
     <MakeDir Directories="$(ThunderstoreStagingDir);$(ProjectDir)dist" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ProjectDir)" />
     <Copy SourceFiles="@(ThunderstoreFiles)" DestinationFolder="$(ThunderstoreStagingDir)" />
     <ZipDirectory SourceDirectory="$(ThunderstoreStagingDir)" DestinationFile="$(ThunderstoreZipPath)" Overwrite="true" />
+    <Copy SourceFiles="$(ThunderstoreZipPath)" DestinationFolder="$(ProjectDir)dist" />
     <Copy SourceFiles="$(ThunderstoreZipPath)" DestinationFolder="$(ProjectDir)../dist" Condition="Exists('$(ProjectDir)../dist')" />
   </Target>
 

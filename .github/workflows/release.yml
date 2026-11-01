@@ -1,0 +1,36 @@
+name: Package Thunderstore Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build flat-root Thunderstore zip
+        run: |
+          rm -f AshlandsDvergrBuff-1.0.0.zip
+          zip -j AshlandsDvergrBuff-1.0.0.zip manifest.json icon.png README.md CHANGELOG.md AshlandsDvergrMod.dll
+          unzip -l AshlandsDvergrBuff-1.0.0.zip
+
+      - name: Upload Thunderstore Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AshlandsDvergrBuff-1.0.0
+          path: AshlandsDvergrBuff-1.0.0.zip
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: Ashlands Dvergr Buff v1.0.0
+          files: AshlandsDvergrBuff-1.0.0.zip
+          overwrite: true
