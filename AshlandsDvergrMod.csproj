@@ -52,8 +52,9 @@
 
   <Target Name="PackageThunderstore" AfterTargets="Build">
     <PropertyGroup>
+      <ManifestVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(ProjectDir)manifest.json')), '"version_number"\s*:\s*"([^"]+)"').Groups[1].Value)</ManifestVersion>
       <ThunderstoreStagingDir>$(IntermediateOutputPath)ThunderstorePackage</ThunderstoreStagingDir>
-      <ThunderstoreZipPath>$(ProjectDir)AshlandsDvergrBuff-1.0.0.zip</ThunderstoreZipPath>
+      <ThunderstoreZipPath>$(ProjectDir)AshlandsDvergrBuff-$(ManifestVersion).zip</ThunderstoreZipPath>
     </PropertyGroup>
     <ItemGroup>
       <ThunderstoreFiles Include="$(TargetPath)" />

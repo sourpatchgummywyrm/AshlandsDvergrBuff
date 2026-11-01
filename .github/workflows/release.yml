@@ -4,33 +4,104 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type (ignored if custom_version is set)'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        description: 'Explicit version number (e.g. 1.2.0). Leave empty to auto-bump.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   package:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and update manifest
+        id: version
+        run: |
+          CURRENT_VER=$(jq -r '.version_number' manifest.json)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VER"
+
+          CUSTOM_VER="${{ github.event.inputs.custom_version }}"
+          BUMP_TYPE="${{ github.event.inputs.bump || 'patch' }}"
+
+          if [ -n "$CUSTOM_VER" ]; then
+            NEW_VER="${CUSTOM_VER#v}"
+          else
+            case "$BUMP_TYPE" in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              *)
+                PATCH=$((PATCH + 1))
+                ;;
+            esac
+            NEW_VER="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "Bumping version: ${CURRENT_VER} -> ${NEW_VER}"
+
+          # Update manifest.json
+          jq --arg v "$NEW_VER" '.version_number = $v' manifest.json > manifest.tmp.json
+          mv manifest.tmp.json manifest.json
+
+          # Update PluginVersion in AshlandsDvergrPlugin.cs
+          sed -i -E "s/(PluginVersion = \")[^\"]+(\";)/\1${NEW_VER}\2/" AshlandsDvergrPlugin.cs
+
+          echo "new_version=${NEW_VER}" >> "$GITHUB_OUTPUT"
+          echo "zip_name=AshlandsDvergrBuff-${NEW_VER}.zip" >> "$GITHUB_OUTPUT"
 
       - name: Build flat-root Thunderstore zip
         run: |
-          rm -f AshlandsDvergrBuff-1.0.0.zip
-          zip -j AshlandsDvergrBuff-1.0.0.zip manifest.json icon.png README.md CHANGELOG.md AshlandsDvergrMod.dll
-          unzip -l AshlandsDvergrBuff-1.0.0.zip
+          ZIP_NAME="${{ steps.version.outputs.zip_name }}"
+          rm -f AshlandsDvergrBuff-*.zip
+          zip -j "$ZIP_NAME" manifest.json icon.png README.md CHANGELOG.md AshlandsDvergrMod.dll
+          unzip -l "$ZIP_NAME"
+
+      - name: Commit updated manifest, version, and package
+        run: |
+          NEW_VER="${{ steps.version.outputs.new_version }}"
+          ZIP_NAME="${{ steps.version.outputs.zip_name }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A manifest.json AshlandsDvergrPlugin.cs AshlandsDvergrBuff-*.zip
+          git commit -m "chore(release): bump version to v${NEW_VER} [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:main
 
       - name: Upload Thunderstore Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AshlandsDvergrBuff-1.0.0
-          path: AshlandsDvergrBuff-1.0.0.zip
+          name: AshlandsDvergrBuff-${{ steps.version.outputs.new_version }}
+          path: ${{ steps.version.outputs.zip_name }}
 
-      - name: Create or Update GitHub Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: Ashlands Dvergr Buff v1.0.0
-          files: AshlandsDvergrBuff-1.0.0.zip
+          tag_name: v${{ steps.version.outputs.new_version }}
+          name: Ashlands Dvergr Buff v${{ steps.version.outputs.new_version }}
+          files: ${{ steps.version.outputs.zip_name }}
+          generate_release_notes: true
           overwrite: true
