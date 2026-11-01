@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Collections.Generic;
 using BepInEx;
 using BepInEx.Configuration;
@@ -20,6 +21,7 @@ namespace AshlandsDvergrMod
         // Configuration entries
         internal static ConfigEntry<float> SpawnRateMultiplier;
         internal static ConfigEntry<float> CampRespawnIntervalMinutes;
+
         internal static ConfigEntry<bool> EnableAmbientAshlandsSpawns;
         internal static ConfigEntry<int> AmbientMaxSpawned;
         internal static ConfigEntry<float> AmbientSpawnInterval;
@@ -38,14 +40,13 @@ namespace AshlandsDvergrMod
         internal static ConfigEntry<float> VisualScale1Star;
         internal static ConfigEntry<float> VisualScale2Star;
 
-        internal static ConfigEntry<bool> ForceClientSideSpawning;
-
         private static readonly HashSet<int> PatchedSpawnLists = new HashSet<int>();
         private static readonly HashSet<int> PatchedCreatureSpawners = new HashSet<int>();
         private static readonly HashSet<int> PatchedSpawnAreas = new HashSet<int>();
         private static readonly Dictionary<int, float> OriginalPrefabHealth = new Dictionary<int, float>();
 
-        private float clientSpawnTimer = 0f;
+        private static FileSystemWatcher _configFileWatcher;
+        private static DateTime _lastConfigReloadTime = DateTime.MinValue;
 
         private void Awake()
         {
@@ -53,108 +54,222 @@ namespace AshlandsDvergrMod
 
             int order = 100;
 
-            // 1. Spawning - Multipliers
+            // 1. Spawning - Multipliers & Ruin Spawners
             SpawnRateMultiplier = Config.Bind("1. Spawning", "SpawnRateMultiplier", 3.0f,
-                new ConfigDescription("Global multiplier for Ashlands Dvergr spawn rate, spawn chance, group sizes, and spawner weights.",
+                new ConfigDescription(
+                    "Global multiplier for Ashlands Dvergr spawn rate, spawn chance, group sizes, and spawner weights.\n" +
+                    "Default: 3.0 (3x faster spawns, 3x capacity).\n" +
+                    "Range: 0.5 to 10.0",
                     new AcceptableValueRange<float>(0.5f, 10.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             CampRespawnIntervalMinutes = Config.Bind("1. Spawning", "CampRespawnIntervalMinutes", 6.7f,
-                new ConfigDescription("Base respawn interval in minutes for Ashlands Dvergr ruin/camp spawners (divided by SpawnRateMultiplier).",
+                new ConfigDescription(
+                    "Base respawn interval in minutes for Ashlands Dvergr ruin/camp spawners (divided by SpawnRateMultiplier).\n" +
+                    "Default: 6.7 minutes.\n" +
+                    "Range: 0.5 to 60.0",
                     new AcceptableValueRange<float>(0.5f, 60.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 2. Ambient Spawning
             EnableAmbientAshlandsSpawns = Config.Bind("2. Ambient Spawns", "EnableAmbientAshlandsSpawns", true,
-                new ConfigDescription("Add ambient Dvergr patrol spawns throughout the Ashlands biome in addition to camp spawners.",
+                new ConfigDescription(
+                    "Add ambient Dvergr patrol spawns throughout the Ashlands biome in addition to camp/ruin spawners.\n" +
+                    "Spawns are server/zone-owner authoritative outside lava.\n" +
+                    "Default: true",
                     null,
                     new ConfigurationManagerAttributes { Order = --order }));
 
             AmbientMaxSpawned = Config.Bind("2. Ambient Spawns", "AmbientMaxSpawned", 6,
-                new ConfigDescription("Maximum active ambient Dvergrs allowed per Ashlands sector.",
+                new ConfigDescription(
+                    "Maximum active ambient Dvergrs allowed per Ashlands sector.\n" +
+                    "Default: 6.\n" +
+                    "Range: 1 to 30",
                     new AcceptableValueRange<int>(1, 30),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             AmbientSpawnInterval = Config.Bind("2. Ambient Spawns", "AmbientSpawnInterval", 100f,
-                new ConfigDescription("Base seconds between ambient spawn checks (divided by SpawnRateMultiplier).",
+                new ConfigDescription(
+                    "Base seconds between ambient spawn checks (divided by SpawnRateMultiplier).\n" +
+                    "Default: 100 seconds.\n" +
+                    "Range: 10.0 to 600.0",
                     new AcceptableValueRange<float>(10f, 600f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             AmbientSpawnChance = Config.Bind("2. Ambient Spawns", "AmbientSpawnChance", 50f,
-                new ConfigDescription("Percentage chance (0-100) to spawn ambient Dvergrs each interval check.",
+                new ConfigDescription(
+                    "Percentage chance (0-100) to spawn ambient Dvergrs each interval check.\n" +
+                    "Default: 50%.\n" +
+                    "Range: 1.0 to 100.0",
                     new AcceptableValueRange<float>(1f, 100f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             AmbientGroupMin = Config.Bind("2. Ambient Spawns", "AmbientGroupMin", 2,
-                new ConfigDescription("Minimum group size for ambient Ashlands Dvergr patrols.",
+                new ConfigDescription(
+                    "Minimum group size for ambient Ashlands Dvergr patrols.\n" +
+                    "Default: 2.\n" +
+                    "Range: 1 to 10",
                     new AcceptableValueRange<int>(1, 10),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             AmbientGroupMax = Config.Bind("2. Ambient Spawns", "AmbientGroupMax", 4,
-                new ConfigDescription("Maximum group size for ambient Ashlands Dvergr patrols.",
+                new ConfigDescription(
+                    "Maximum group size for ambient Ashlands Dvergr patrols.\n" +
+                    "Default: 4.\n" +
+                    "Range: 1 to 15",
                     new AcceptableValueRange<int>(1, 15),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             AmbientSpawnRadiusMin = Config.Bind("2. Ambient Spawns", "AmbientSpawnRadiusMin", 40f,
-                new ConfigDescription("Minimum distance from players to spawn ambient Dvergrs.",
+                new ConfigDescription(
+                    "Minimum distance in meters from players to spawn ambient Dvergrs.\n" +
+                    "Default: 40 meters.\n" +
+                    "Range: 10.0 to 100.0",
                     new AcceptableValueRange<float>(10f, 100f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             AmbientSpawnRadiusMax = Config.Bind("2. Ambient Spawns", "AmbientSpawnRadiusMax", 80f,
-                new ConfigDescription("Maximum distance from players to spawn ambient Dvergrs.",
+                new ConfigDescription(
+                    "Maximum distance in meters from players to spawn ambient Dvergrs.\n" +
+                    "Default: 80 meters.\n" +
+                    "Range: 40.0 to 200.0",
                     new AcceptableValueRange<float>(40f, 200f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 3. Combat Stats
-            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 3.0f,
-                new ConfigDescription("Base health multiplier for Dvergrs in the Ashlands (scales further with star level).",
+            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 2.0f,
+                new ConfigDescription(
+                    "Base health multiplier for Dvergrs in the Ashlands (default: 2.0 = 2x base HP: 600 -> 1200).\n" +
+                    "Higher star levels scale up from this base.\n" +
+                    "Range: 0.5 to 10.0",
                     new AcceptableValueRange<float>(0.5f, 10.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 2.0f,
-                new ConfigDescription("Outgoing damage multiplier for Ashlands Dvergrs (melee, arbalests, and magic AOEs).",
+                new ConfigDescription(
+                    "Outgoing damage multiplier for Ashlands Dvergrs (melee strikes, arbalest bolts, and magic AOEs).\n" +
+                    "Default: 2.0 (2x damage, plus vanilla +50% per star level).\n" +
+                    "Range: 0.5 to 10.0",
                     new AcceptableValueRange<float>(0.5f, 10.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 4. Stars & Levels
             MinLevel = Config.Bind("4. Stars & Levels", "MinLevel", 1,
-                new ConfigDescription("Minimum level for Ashlands Dvergrs (1 = 0 stars, 2 = 1 star, 3 = 2 stars).",
+                new ConfigDescription(
+                    "Minimum level for Ashlands Dvergrs (1 = 0 stars, 2 = 1 star, 3 = 2 stars).\n" +
+                    "Default: 1 (0 stars).\n" +
+                    "Range: 1 to 3",
                     new AcceptableValueRange<int>(1, 3),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             MaxLevel = Config.Bind("4. Stars & Levels", "MaxLevel", 3,
-                new ConfigDescription("Maximum level for Ashlands Dvergrs (1 = 0 stars, 2 = 1 star, 3 = 2 stars).",
+                new ConfigDescription(
+                    "Maximum level for Ashlands Dvergrs (1 = 0 stars, 2 = 1 star, 3 = 2 stars).\n" +
+                    "Default: 3 (2 stars).\n" +
+                    "Range: 1 to 3",
                     new AcceptableValueRange<int>(1, 3),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             LevelUpChance = Config.Bind("4. Stars & Levels", "LevelUpChance", 50f,
-                new ConfigDescription("Percentage chance (0-100) per star roll to upgrade to next rank.",
+                new ConfigDescription(
+                    "Percentage chance (0-100) per star roll to upgrade to next rank.\n" +
+                    "Default: 50%.\n" +
+                    "Range: 0.0 to 100.0",
                     new AcceptableValueRange<float>(0f, 100f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             VisualScale1Star = Config.Bind("4. Stars & Levels", "VisualScale1Star", 1.1f,
-                new ConfigDescription("Visual body scale multiplier for 1-star Ashlands Dvergrs.",
+                new ConfigDescription(
+                    "Visual body scale multiplier for 1-star Ashlands Dvergrs.\n" +
+                    "Default: 1.1 (10% larger).\n" +
+                    "Range: 1.0 to 1.5",
                     new AcceptableValueRange<float>(1.0f, 1.5f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             VisualScale2Star = Config.Bind("4. Stars & Levels", "VisualScale2Star", 1.2f,
-                new ConfigDescription("Visual body scale multiplier for 2-star Ashlands Dvergrs.",
+                new ConfigDescription(
+                    "Visual body scale multiplier for 2-star Ashlands Dvergrs.\n" +
+                    "Default: 1.2 (20% larger).\n" +
+                    "Range: 1.0 to 2.0",
                     new AcceptableValueRange<float>(1.0f, 2.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            // 5. Multiplayer Client-Side
-            ForceClientSideSpawning = Config.Bind("5. Multiplayer Client Override", "ForceClientSideSpawning", false,
-                new ConfigDescription("Forces client-driven ambient spawning in the Ashlands when connected to a server where you are not zone owner. WARNING: May cause duplicate spawns if multiple players enable it in the same zone.",
-                    null,
-                    new ConfigurationManagerAttributes { Order = --order }));
+            // Text-file support: Save immediately so the .cfg file exists on disk with full comments
+            Config.Save();
 
+            // Hook live changes from GUI or code
             Config.SettingChanged += OnSettingChanged;
+            Config.ConfigReloaded += OnConfigReloaded;
+
+            // Watch .cfg file on disk for manual edits in any text editor
+            SetupConfigFileWatcher();
 
             new Harmony(PluginGuid).PatchAll(typeof(AshlandsDvergrPlugin));
             Log.LogInfo($"{PluginName} {PluginVersion} loaded.");
         }
 
+        private void SetupConfigFileWatcher()
+        {
+            try
+            {
+                string configFilePath = Config.ConfigFilePath;
+                string directory = Path.GetDirectoryName(configFilePath);
+                string fileName = Path.GetFileName(configFilePath);
+
+                if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName))
+                {
+                    return;
+                }
+
+                _configFileWatcher = new FileSystemWatcher(directory, fileName)
+                {
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+                    IncludeSubdirectories = false,
+                    EnableRaisingEvents = true
+                };
+
+                _configFileWatcher.Changed += OnConfigFileDiskChanged;
+                _configFileWatcher.Created += OnConfigFileDiskChanged;
+                _configFileWatcher.Renamed += OnConfigFileDiskChanged;
+                Log.LogInfo($"Watching text config file for edits: {configFilePath}");
+            }
+            catch (Exception ex)
+            {
+                Log.LogWarning($"Could not set up text config file watcher: {ex.Message}");
+            }
+        }
+
+        private static void OnConfigFileDiskChanged(object sender, FileSystemEventArgs e)
+        {
+            if ((DateTime.Now - _lastConfigReloadTime).TotalMilliseconds < 1000)
+            {
+                return;
+            }
+            _lastConfigReloadTime = DateTime.Now;
+
+            try
+            {
+                Log.LogInfo("Text config file modified on disk. Reloading settings...");
+                // Reload values from text file into ConfigEntry objects
+                ((AshlandsDvergrPlugin)BepInEx.Bootstrap.Chainloader.PluginInfos[PluginGuid].Instance).Config.Reload();
+            }
+            catch (Exception ex)
+            {
+                Log.LogError($"Failed to reload text config file: {ex.Message}");
+            }
+        }
+
+        private static void OnConfigReloaded(object sender, EventArgs e)
+        {
+            RefreshPrefabStats();
+        }
+
         private static void OnSettingChanged(object sender, SettingChangedEventArgs e)
+        {
+            RefreshPrefabStats();
+        }
+
+        private static void RefreshPrefabStats()
         {
             if (ZNetScene.instance == null)
             {
@@ -167,64 +282,8 @@ namespace AshlandsDvergrMod
                 if (ch != null && OriginalPrefabHealth.TryGetValue(dvergrAshlands.GetInstanceID(), out float baseHp))
                 {
                     ch.m_health = baseHp * Mathf.Max(0.1f, HealthMultiplier.Value);
-                    Log.LogInfo($"Dynamically updated DvergerAshlands base health to {ch.m_health} from config change.");
-                }
-            }
-        }
-
-        private void Update()
-        {
-            if (!ForceClientSideSpawning.Value || ZNet.instance == null || Player.m_localPlayer == null || ZNetScene.instance == null)
-            {
-                return;
-            }
-
-            Vector3 playerPos = Player.m_localPlayer.transform.position;
-            if (!IsInAshlands(playerPos))
-            {
-                return;
-            }
-
-            clientSpawnTimer += Time.deltaTime;
-            float checkInterval = Mathf.Max(5f, AmbientSpawnInterval.Value / Mathf.Max(0.1f, SpawnRateMultiplier.Value));
-            if (clientSpawnTimer < checkInterval)
-            {
-                return;
-            }
-            clientSpawnTimer = 0f;
-
-            GameObject prefab = ZNetScene.instance.GetPrefab("DvergerAshlands");
-            if (prefab == null)
-            {
-                return;
-            }
-
-            int nearbyCount = SpawnSystem.GetNrOfInstances(prefab, playerPos, 64f);
-            if (nearbyCount >= AmbientMaxSpawned.Value)
-            {
-                return;
-            }
-
-            if (UnityEngine.Random.Range(0f, 100f) > AmbientSpawnChance.Value)
-            {
-                return;
-            }
-
-            int spawnCount = UnityEngine.Random.Range(AmbientGroupMin.Value, AmbientGroupMax.Value + 1);
-            float minRad = Mathf.Max(10f, AmbientSpawnRadiusMin.Value);
-            float maxRad = Mathf.Max(minRad + 5f, AmbientSpawnRadiusMax.Value);
-
-            for (int i = 0; i < spawnCount && (nearbyCount + i) < AmbientMaxSpawned.Value; i++)
-            {
-                Vector2 circle = UnityEngine.Random.insideUnitCircle.normalized * UnityEngine.Random.Range(minRad, maxRad);
-                Vector3 spawnPos = playerPos + new Vector3(circle.x, 0f, circle.y);
-                if (ZoneSystem.instance.FindFloor(spawnPos, out float floorY))
-                {
-                    spawnPos.y = floorY + 0.5f;
-                    if (!ZoneSystem.instance.IsLava(spawnPos) && !ZoneSystem.instance.IsBlocked(spawnPos))
-                    {
-                        ZNetScene.instance.SpawnObject(spawnPos, Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f), prefab);
-                    }
+                    EnsureVisualStarSetups(ch);
+                    Log.LogInfo($"Refreshed DvergerAshlands prefab base health to {ch.m_health} (HealthMultiplier={HealthMultiplier.Value}).");
                 }
             }
         }
