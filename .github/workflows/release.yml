@@ -74,28 +74,33 @@ jobs:
           echo "new_version=${NEW_VER}" >> "$GITHUB_OUTPUT"
           echo "zip_name=AshlandsDvergrBuff-${NEW_VER}.zip" >> "$GITHUB_OUTPUT"
 
-      - name: Build flat-root Thunderstore zip
-        run: |
-          ZIP_NAME="${{ steps.version.outputs.zip_name }}"
-          rm -f AshlandsDvergrBuff-*.zip
-          zip -j "$ZIP_NAME" manifest.json icon.png README.md CHANGELOG.md AshlandsDvergrMod.dll
-          unzip -l "$ZIP_NAME"
-
-      - name: Commit updated manifest, version, and package
+      - name: Commit updated manifest and version
         run: |
           NEW_VER="${{ steps.version.outputs.new_version }}"
-          ZIP_NAME="${{ steps.version.outputs.zip_name }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A manifest.json AshlandsDvergrPlugin.cs AshlandsDvergrBuff-*.zip
+          git rm -f --ignore-unmatch *.zip
+          git add manifest.json AshlandsDvergrPlugin.cs
           git commit -m "chore(release): bump version to v${NEW_VER} [skip ci]" || echo "No changes to commit"
           git push origin HEAD:main
 
-      - name: Upload Thunderstore Artifact
+      - name: Upload Thunderstore Artifact (auto-zipped by GitHub Actions)
         uses: actions/upload-artifact@v4
         with:
           name: AshlandsDvergrBuff-${{ steps.version.outputs.new_version }}
-          path: ${{ steps.version.outputs.zip_name }}
+          path: |
+            manifest.json
+            icon.png
+            README.md
+            CHANGELOG.md
+            AshlandsDvergrMod.dll
+
+      - name: Build flat-root zip for GitHub Release
+        run: |
+          ZIP_NAME="${{ steps.version.outputs.zip_name }}"
+          rm -f "$ZIP_NAME"
+          zip -j "$ZIP_NAME" manifest.json icon.png README.md CHANGELOG.md AshlandsDvergrMod.dll
+          unzip -l "$ZIP_NAME"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

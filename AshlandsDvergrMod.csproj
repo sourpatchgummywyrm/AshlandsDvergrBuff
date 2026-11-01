@@ -54,7 +54,7 @@
     <PropertyGroup>
       <ManifestVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(ProjectDir)manifest.json')), '"version_number"\s*:\s*"([^"]+)"').Groups[1].Value)</ManifestVersion>
       <ThunderstoreStagingDir>$(IntermediateOutputPath)ThunderstorePackage</ThunderstoreStagingDir>
-      <ThunderstoreZipPath>$(ProjectDir)AshlandsDvergrBuff-$(ManifestVersion).zip</ThunderstoreZipPath>
+      <ThunderstoreZipPath>$(ProjectDir)dist/AshlandsDvergrBuff-$(ManifestVersion).zip</ThunderstoreZipPath>
     </PropertyGroup>
     <ItemGroup>
       <ThunderstoreFiles Include="$(TargetPath)" />
@@ -68,7 +68,6 @@
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ProjectDir)" />
     <Copy SourceFiles="@(ThunderstoreFiles)" DestinationFolder="$(ThunderstoreStagingDir)" />
     <ZipDirectory SourceDirectory="$(ThunderstoreStagingDir)" DestinationFile="$(ThunderstoreZipPath)" Overwrite="true" />
-    <Copy SourceFiles="$(ThunderstoreZipPath)" DestinationFolder="$(ProjectDir)dist" />
     <Copy SourceFiles="$(ThunderstoreZipPath)" DestinationFolder="$(ProjectDir)../dist" Condition="Exists('$(ProjectDir)../dist')" />
   </Target>
 
