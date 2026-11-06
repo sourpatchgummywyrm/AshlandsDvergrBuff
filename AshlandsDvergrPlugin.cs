@@ -16,7 +16,7 @@ namespace AshlandsDvergrMod
     {
         public const string PluginGuid = "com.valheim.ashlandsdvergrmod";
         public const string PluginName = "Ashlands Dvergr Boost";
-        public const string PluginVersion = "1.0.8";
+        public const string PluginVersion = "1.1.4";
 
         internal static ManualLogSource Log;
 
@@ -36,8 +36,9 @@ namespace AshlandsDvergrMod
 
         internal static ConfigEntry<float> HealthMultiplier;
         internal static ConfigEntry<float> DamageMultiplier;
+        internal static ConfigEntry<float> MageHealthMultiplier;
+        internal static ConfigEntry<float> MageDamageMultiplier;
         internal static ConfigEntry<bool> UseAshlandsBloodWeapons;
-        internal static ConfigEntry<float> BloodWeaponDropChance;
         internal static ConfigEntry<float> PassiveHealPercentPerTick;
         internal static ConfigEntry<float> PassiveHealIntervalSeconds;
 
@@ -54,8 +55,7 @@ namespace AshlandsDvergrMod
         {
             "DvergerMageFire",
             "DvergerMageIce",
-            "DvergerMageSupport",
-            "Dverger"
+            "DvergerMageSupport"
         };
 
         private static readonly HashSet<int> PatchedSpawnLists = new HashSet<int>();
@@ -90,10 +90,10 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0.5f, 60.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VarietyDvergrSpawnChance = Config.Bind("1. Spawning", "VarietyDvergrSpawnChance", 20f,
+            VarietyDvergrSpawnChance = Config.Bind("1. Spawning", "VarietyDvergrSpawnChance", 30f,
                 new ConfigDescription(
-                    "Percentage chance (0-100) for Ashlands Dvergr spawns to be a Mage (Fire, Ice, or Support) or classic Dvergr variant instead of only DvergerAshlands.\n" +
-                    "Default: 20%.\n" +
+                    "Percentage chance (0-100) for Ashlands Dvergr spawns to be a variety type (Fire Mage, Ice Mage, or Support Mage) instead of standard DvergerAshlands.\n" +
+                    "Default: 30% (giving a 70% / 10% / 10% / 10% split among Crossbow / Fire / Ice / Support).\n" +
                     "Range: 0.0 to 100.0",
                     new AcceptableValueRange<float>(0.0f, 100.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -164,10 +164,10 @@ namespace AshlandsDvergrMod
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 3. Combat Stats & Passive Healing
-            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 1.35f,
+            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 1.20f,
                 new ConfigDescription(
-                    "Base health multiplier for Dvergrs in the Ashlands (default: 1.35 = +35% base HP: 600 -> 810).\n" +
-                    "Star levels add +40% HP per star (0-star: 810 HP, 1-star: 1134 HP, 2-star: 1458 HP).\n" +
+                    "Base health multiplier for Dvergrs in the Ashlands (default: 1.20 = +20% base HP: 600 -> 720).\n" +
+                    "Star levels add +25% HP per star (0-star: 720 HP, 1-star: 900 HP, 2-star: 1080 HP).\n" +
                     "Range: 0.5 to 3.0",
                     new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -175,24 +175,32 @@ namespace AshlandsDvergrMod
             DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 1.25f,
                 new ConfigDescription(
                     "Outgoing damage multiplier for Ashlands Dvergrs when UseAshlandsBloodWeapons is false (melee strikes, arbalest bolts, and magic AOEs).\n" +
-                    "Default: 1.25 (+25% base damage, with +25% per star level: 1.25x / 1.56x / 1.88x).\n" +
+                    "Default: 1.25 (+25% base damage, +25% at 1-star; 2-star skips default star damage scaling due to weapon buff).\n" +
+                    "Range: 0.5 to 3.0",
+                    new AcceptableValueRange<float>(0.5f, 3.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            MageHealthMultiplier = Config.Bind("3. Combat Stats", "MageHealthMultiplier", 1.08f,
+                new ConfigDescription(
+                    "Separate base health multiplier for Dvergr Mages in the Ashlands (Fire, Ice, Support).\n" +
+                    "Set lower than warriors/crossbowmen by default to balance glass-cannon magic power (default: 1.08 = +8% base HP: 450 -> 486).\n" +
+                    "Range: 0.5 to 3.0",
+                    new AcceptableValueRange<float>(0.5f, 3.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            MageDamageMultiplier = Config.Bind("3. Combat Stats", "MageDamageMultiplier", 1.10f,
+                new ConfigDescription(
+                    "Separate outgoing damage multiplier for Dvergr Mages in the Ashlands.\n" +
+                    "Sets lower spell/AOE scaling by default (default: 1.10 = +10% base damage, or baseline staff ratio modifier).\n" +
                     "Range: 0.5 to 3.0",
                     new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             UseAshlandsBloodWeapons = Config.Bind("3. Combat Stats", "UseAshlandsBloodWeapons", true,
                 new ConfigDescription(
-                    "Instead of scaling damage via DamageMultiplier, equip Ashlands Dvergrs with their equivalent Ashlands Blood Weapon (Wound Ripper / CrossbowRipperBlood for crossbowmen, Staff of Fracturing / Dundr / Trollstav for mages) with Bloodstone missing-HP damage scaling and drop it on death.\n" +
+                    "Equip 2-star Ashlands Dvergrs with their equivalent Ashlands Blood Weapon / upgraded magic staff (Wound Ripper for crossbowmen, Staff of Fracturing / Dundr / fully upgraded Staff of Frost for mages) with Bloodstone missing-HP damage scaling (0 and 1-star Dvergrs wield default weapons).\n" +
                     "Default: true",
                     null,
-                    new ConfigurationManagerAttributes { Order = --order }));
-
-            BloodWeaponDropChance = Config.Bind("3. Combat Stats", "BloodWeaponDropChance", 100f,
-                new ConfigDescription(
-                    "Percentage chance (0-100) for an Ashlands Dvergr to drop their equipped Ashlands Blood Weapon on death when UseAshlandsBloodWeapons is enabled.\n" +
-                    "Default: 100%.\n" +
-                    "Range: 0.0 to 100.0",
-                    new AcceptableValueRange<float>(0.0f, 100.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             PassiveHealPercentPerTick = Config.Bind("3. Combat Stats", "PassiveHealPercentPerTick", 1.0f,
@@ -236,18 +244,18 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0f, 100f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VisualScale1Star = Config.Bind("4. Stars & Levels", "VisualScale1Star", 1.1f,
+            VisualScale1Star = Config.Bind("4. Stars & Levels", "VisualScale1Star", 1.05f,
                 new ConfigDescription(
                     "Visual body scale multiplier for 1-star Ashlands Dvergrs.\n" +
-                    "Default: 1.1 (10% larger).\n" +
+                    "Default: 1.05 (5% larger).\n" +
                     "Range: 1.0 to 1.5",
                     new AcceptableValueRange<float>(1.0f, 1.5f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VisualScale2Star = Config.Bind("4. Stars & Levels", "VisualScale2Star", 1.2f,
+            VisualScale2Star = Config.Bind("4. Stars & Levels", "VisualScale2Star", 1.10f,
                 new ConfigDescription(
                     "Visual body scale multiplier for 2-star Ashlands Dvergrs.\n" +
-                    "Default: 1.2 (20% larger).\n" +
+                    "Default: 1.10 (10% larger).\n" +
                     "Range: 1.0 to 2.0",
                     new AcceptableValueRange<float>(1.0f, 2.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -360,15 +368,21 @@ namespace AshlandsDvergrMod
             {
                 return;
             }
-            GameObject dvergrAshlands = ZNetScene.instance.GetPrefab("DvergerAshlands");
-            if (dvergrAshlands != null)
+
+            string[] dvergrPrefabsToRefresh = { "DvergerAshlands", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport", "Dverger" };
+            foreach (string pName in dvergrPrefabsToRefresh)
             {
-                Character ch = dvergrAshlands.GetComponent<Character>();
-                if (ch != null && OriginalPrefabHealth.TryGetValue(dvergrAshlands.GetInstanceID(), out float baseHp))
+                GameObject go = ZNetScene.instance.GetPrefab(pName);
+                if (go != null)
                 {
-                    ch.m_health = baseHp * Mathf.Max(0.1f, HealthMultiplier.Value);
-                    EnsureVisualStarSetups(ch);
-                    Log.LogInfo($"Refreshed DvergerAshlands prefab base health to {ch.m_health} (HealthMultiplier={HealthMultiplier.Value}).");
+                    Character c = go.GetComponent<Character>();
+                    if (c != null && OriginalPrefabHealth.TryGetValue(go.GetInstanceID(), out float baseHp))
+                    {
+                        float hpMult = GetHealthMultiplierFor(c);
+                        c.m_health = baseHp * hpMult;
+                        EnsureVisualStarSetups(c);
+                        Log.LogInfo($"Refreshed {pName} prefab base health to {c.m_health} (mult={hpMult}).");
+                    }
                 }
             }
 
@@ -428,6 +442,34 @@ namespace AshlandsDvergrMod
                 return true;
             }
             return IsInAshlands(ch.transform.position);
+        }
+
+        internal static bool IsDvergrMage(Character ch)
+        {
+            if (ch == null)
+            {
+                return false;
+            }
+            return IsDvergrMageName(ch.gameObject.name);
+        }
+
+        internal static bool IsDvergrMageName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+            return name.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        internal static float GetHealthMultiplierFor(Character ch)
+        {
+            return IsDvergrMage(ch) ? Mathf.Max(0.1f, MageHealthMultiplier.Value) : Mathf.Max(0.1f, HealthMultiplier.Value);
+        }
+
+        internal static float GetDamageMultiplierFor(Character ch)
+        {
+            return IsDvergrMage(ch) ? Mathf.Max(0.1f, MageDamageMultiplier.Value) : Mathf.Max(0.1f, DamageMultiplier.Value);
         }
 
         internal static int RollConfiguredLevel()
@@ -519,7 +561,14 @@ namespace AshlandsDvergrMod
             if (characterName.IndexOf("MageSupport", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 characterName.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                return "StaffRedTroll";
+                return "StaffIceShards";
+            }
+            if (string.Equals(characterName, "Dverger", StringComparison.OrdinalIgnoreCase) ||
+                (characterName.IndexOf("Dverger", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 characterName.IndexOf("Ashlands", StringComparison.OrdinalIgnoreCase) < 0 &&
+                 characterName.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) < 0))
+            {
+                return "BattleaxeSkullSplittur";
             }
             return "CrossbowRipperBlood";
         }
@@ -554,10 +603,17 @@ namespace AshlandsDvergrMod
             {
                 assetIdHex = prefabName switch
                 {
+                    "DvergerAshlands" => "2ece1cf15f2885a4da6da84af9d5c542",
+                    "DvergerMageFire" => "1ed38d388ceda5f4e89f5be4d1768fab",
+                    "DvergerMageIce" => "8ad104a536dd94d4bb764f8a9f3d8ee7",
+                    "DvergerMageSupport" => "c0e85e3d180619047bdf97cd98271a4d",
+                    "Dverger" => "b780f1078c33d2344836ccefd3bf9352",
                     "CrossbowRipperBlood" => "483a950c53776e74ea40aef310fefbb2",
                     "StaffClusterbomb" => "d4812897e4412e540b7fa649d25b99d5",
                     "StaffLightning" => "90f15fa074aa08a478750566117d84d0",
                     "StaffRedTroll" => "87eebe8749379744eacfa37ea818aeab",
+                    "StaffIceShards" => "d268d47613aec2963b1878ed2a224e1e",
+                    "BattleaxeSkullSplittur" => "131b6e64eaee51547a0b76f472190581",
                     "fx_fader_chestfire" => "affcfc1b631dafe4ba5eb9388ec6196a",
                     "fx_goblinking_nova_hand" => "ebf058290cad64993843155e16b4b6f6",
                     "fx_DvergerMage_Nova_ring" => "c1b9194e4cba6e648aacfd970dd12da9",
@@ -592,21 +648,27 @@ namespace AshlandsDvergrMod
             {
                 return;
             }
-            GameObject dvergrAshlands = __instance.GetPrefab("DvergerAshlands");
-            if (dvergrAshlands != null)
+
+            string[] dvergrPrefabs = { "DvergerAshlands", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport", "Dverger" };
+            foreach (string pName in dvergrPrefabs)
             {
-                Character ch = dvergrAshlands.GetComponent<Character>();
-                if (ch != null)
+                GameObject go = __instance.GetPrefab(pName);
+                if (go != null)
                 {
-                    int id = dvergrAshlands.GetInstanceID();
-                    if (!OriginalPrefabHealth.TryGetValue(id, out float baseHp))
+                    Character ch = go.GetComponent<Character>();
+                    if (ch != null)
                     {
-                        baseHp = ch.m_health;
-                        OriginalPrefabHealth[id] = baseHp;
+                        int id = go.GetInstanceID();
+                        if (!OriginalPrefabHealth.TryGetValue(id, out float baseHp))
+                        {
+                            baseHp = ch.m_health;
+                            OriginalPrefabHealth[id] = baseHp;
+                        }
+                        float hpMult = GetHealthMultiplierFor(ch);
+                        ch.m_health = baseHp * hpMult;
+                        EnsureVisualStarSetups(ch);
+                        Log.LogInfo($"Configured {pName} prefab base health: {baseHp} -> {ch.m_health} (mult={hpMult})");
                     }
-                    ch.m_health = baseHp * Mathf.Max(0.1f, HealthMultiplier.Value);
-                    EnsureVisualStarSetups(ch);
-                    Log.LogInfo($"Configured DvergerAshlands prefab base health: {baseHp} -> {ch.m_health}");
                 }
             }
         }
@@ -622,9 +684,13 @@ namespace AshlandsDvergrMod
             EnsureVisualStarSetups(__instance);
             if (__instance.gameObject.name.IndexOf("Ashlands", StringComparison.OrdinalIgnoreCase) < 0)
             {
-                // Elevate variety Mistlands Dvergrs (Mages, classic Dverger) spawned in Ashlands to Ashlands base HP (600) before multiplier
-                float ashlandsBaseHp = Mathf.Max(__instance.m_health, 600f);
-                __instance.m_health = ashlandsBaseHp * Mathf.Max(0.1f, HealthMultiplier.Value);
+                // Elevate variety Mistlands Dvergrs (Mages, classic Dverger) spawned in Ashlands to Ashlands base HP standard before multiplier
+                // Mages get base 450 (higher than vanilla 200, but lower than Ashlands ranger 600 base); warriors/rogues get 600 base
+                bool isMage = IsDvergrMage(__instance);
+                float baseStandard = isMage ? 450f : 600f;
+                float hpMult = GetHealthMultiplierFor(__instance);
+                float ashlandsBaseHp = Mathf.Max(__instance.m_health, baseStandard);
+                __instance.m_health = ashlandsBaseHp * hpMult;
             }
         }
 
@@ -669,8 +735,8 @@ namespace AshlandsDvergrMod
         private static float CalculateScaledMaxHealth(Character ch)
         {
             int stars = Mathf.Max(0, ch.GetLevel() - 1);
-            // +40% HP per star (1.0x / 1.4x / 1.8x) instead of vanilla +100% per star (1x / 2x / 3x)
-            float starMult = 1f + stars * 0.40f;
+            // +25% HP per star (1.0x / 1.25x / 1.50x) instead of vanilla +100% per star (1x / 2x / 3x)
+            float starMult = 1f + stars * 0.25f;
             return ch.GetMaxHealthBase() * starMult;
         }
 
@@ -1009,11 +1075,14 @@ namespace AshlandsDvergrMod
 
         private static float CalculateBloodWeaponDamageMultiplier(Character ch)
         {
-            // Equivalent Ashlands Blood Weapon (CrossbowRipperBlood / Ashlands Staff) base ratio (~1.35x)
+            // Equivalent Ashlands Blood Weapon base ratio:
+            // Crossbowmen ~1.35x, Mages ~1.20x * MageDamageMultiplier adjustment
             // plus Bloodstone effect: +0.5% damage per 1% missing health (up to +50% at low HP)
+            bool isMage = IsDvergrMage(ch);
+            float baseRatio = isMage ? 1.20f * (MageDamageMultiplier.Value / 1.10f) : 1.35f * (DamageMultiplier.Value / 1.25f);
             float missingHpRatio = ch != null ? Mathf.Clamp01(1f - ch.GetHealthPercentage()) : 0f;
             float bloodstoneBonus = 1f + missingHpRatio * 0.50f;
-            return 1.35f * bloodstoneBonus;
+            return baseRatio * bloodstoneBonus;
         }
 
         [HarmonyPatch(typeof(SEMan), "ModifyAttack")]
@@ -1023,12 +1092,15 @@ namespace AshlandsDvergrMod
             if (hitData != null && IsAshlandsDvergr(___m_character))
             {
                 int stars = Mathf.Max(0, ___m_character.GetLevel() - 1);
-                // Vanilla Attack already multiplied damage by (1 + stars * 0.50); rescale to gentler +25% per star (1 + stars * 0.25)
+                // Vanilla Attack already multiplied damage by (1 + stars * 0.50).
+                // Rescale: +25% at 1-star (1.25x), but remove extra star damage scale from 1 to 2 star (caps at 1-star 1.25x)
+                // because 2-star already receives the advanced blood weapon / staff buff.
+                int effectiveDamageStars = Mathf.Min(stars, 1);
                 float vanillaStarMult = 1f + stars * 0.50f;
-                float gentleStarMult = 1f + stars * 0.25f;
-                float baseMult = UseAshlandsBloodWeapons.Value
+                float gentleStarMult = 1f + effectiveDamageStars * 0.25f;
+                float baseMult = (UseAshlandsBloodWeapons.Value && stars >= 2)
                     ? CalculateBloodWeaponDamageMultiplier(___m_character)
-                    : Mathf.Max(0.1f, DamageMultiplier.Value);
+                    : GetDamageMultiplierFor(___m_character);
                 float mult = baseMult * (gentleStarMult / vanillaStarMult);
                 hitData.m_damage.Modify(mult);
             }
@@ -1045,66 +1117,13 @@ namespace AshlandsDvergrMod
             if (hitData == null || !__instance.m_useAttackSettings)
             {
                 int stars = Mathf.Max(0, owner.GetLevel() - 1);
-                float baseMult = UseAshlandsBloodWeapons.Value
+                int effectiveDamageStars = Mathf.Min(stars, 1);
+                float baseMult = (UseAshlandsBloodWeapons.Value && stars >= 2)
                     ? CalculateBloodWeaponDamageMultiplier(owner)
-                    : Mathf.Max(0.1f, DamageMultiplier.Value);
-                float mult = baseMult * (1f + stars * 0.25f);
+                    : GetDamageMultiplierFor(owner);
+                float mult = baseMult * (1f + effectiveDamageStars * 0.25f);
                 __instance.m_damage.Modify(mult);
             }
-        }
-
-        [HarmonyPatch(typeof(Character), "OnDeath")]
-        [HarmonyPrefix]
-        private static void Character_OnDeath_Prefix(Character __instance, ZNetView ___m_nview)
-        {
-            if (__instance == null || !UseAshlandsBloodWeapons.Value || !IsAshlandsDvergr(__instance))
-            {
-                return;
-            }
-            if (___m_nview == null || !___m_nview.IsValid() || !___m_nview.IsOwner())
-            {
-                return;
-            }
-            float dropChance = Mathf.Clamp(BloodWeaponDropChance.Value, 0f, 100f);
-            if (dropChance <= 0f || UnityEngine.Random.Range(0f, 100f) > dropChance)
-            {
-                return;
-            }
-            ZDO zdo = ___m_nview.GetZDO();
-            const string DropKey = "AshlandsDvergrMod_DroppedBloodWeapon";
-            if (zdo != null)
-            {
-                if (zdo.GetBool(DropKey))
-                {
-                    return;
-                }
-                zdo.Set(DropKey, true);
-            }
-
-            string weaponPrefabName = GetEquivalentBloodWeaponPrefabName(__instance.gameObject.name);
-            GameObject weaponPrefab = ResolvePrefabByNameOrAssetId(weaponPrefabName);
-            if (weaponPrefab == null)
-            {
-                return;
-            }
-
-            Vector3 dropPos = __instance.GetCenterPoint() + Vector3.up * 0.45f;
-            Quaternion dropRot = Quaternion.Euler(0f, UnityEngine.Random.Range(0, 360), 0f);
-            GameObject dropped = UnityEngine.Object.Instantiate(weaponPrefab, dropPos, dropRot);
-            ItemDrop itemDrop = dropped.GetComponent<ItemDrop>();
-            if (itemDrop != null && itemDrop.m_itemData != null)
-            {
-                int quality = Mathf.Clamp(__instance.GetLevel(), 1, 3);
-                itemDrop.SetQuality(quality);
-            }
-            Rigidbody rb = dropped.GetComponent<Rigidbody>();
-            if (rb != null)
-            {
-                Vector3 vel = UnityEngine.Random.insideUnitSphere * 1.5f;
-                vel.y = Mathf.Abs(vel.y) + 3.0f;
-                rb.linearVelocity = vel;
-            }
-            Log.LogInfo($"Ashlands Dvergr '{__instance.gameObject.name}' (level {__instance.GetLevel()}) dropped {weaponPrefabName}.");
         }
 
         [HarmonyPatch(typeof(VisEquipment), "UpdateEquipmentVisuals")]
@@ -1229,18 +1248,46 @@ namespace AshlandsDvergrMod
                 GameObject stageRoot = new GameObject("DvergrValidationStage");
                 stageRoot.transform.position = stageOrigin;
 
-                float[] xOffsets = { -1.65f, 0f, 1.65f };
-                float[] scales = { 1.0f, VisualScale1Star.Value, VisualScale2Star.Value };
+                float[] xOffsets = { -2.7f, -0.9f, 0.9f, 2.7f };
+                int[] levels = { 3, 3, 3, 3 };
+                string[] prefabNames = { "DvergerAshlands", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport" };
 
-                string rightHandBoneName = prefabVisEq?.m_rightHand != null ? prefabVisEq.m_rightHand.name : "RightHand_Attach";
-
-                for (int i = 0; i < 3; i++)
+                for (int i = 0; i < 4; i++)
                 {
-                    int level = i + 1;
-                    GameObject model = UnityEngine.Object.Instantiate(visualTemplate.gameObject, stageRoot.transform);
+                    int level = levels[i];
+                    string pName = prefabNames[i];
+                    GameObject curPrefab = ResolvePrefabByNameOrAssetId(pName) ?? prefab;
+                    Transform curVisualTemplate = curPrefab.transform.Find("Visual") ?? curPrefab.transform;
+
+                    GameObject model = UnityEngine.Object.Instantiate(curVisualTemplate.gameObject, stageRoot.transform);
+                    model.name = pName;
                     model.transform.localPosition = new Vector3(xOffsets[i], 0f, 0f);
                     model.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
-                    model.transform.localScale = Vector3.one * scales[i];
+                    float scale = level == 1 ? 1.0f : (level == 2 ? VisualScale1Star.Value : VisualScale2Star.Value);
+                    model.transform.localScale = Vector3.one * scale;
+
+                    VisEquipment curVisEq = curPrefab.GetComponent<VisEquipment>();
+                    string rightHandBoneName = curVisEq?.m_rightHand != null ? curVisEq.m_rightHand.name : "RightHand_Attach";
+
+                    List<GameObject> curEquipItems = new List<GameObject>();
+                    Humanoid curHum = curPrefab.GetComponent<Humanoid>();
+                    if (curHum != null)
+                    {
+                        if (curHum.m_defaultItems != null)
+                        {
+                            foreach (var go in curHum.m_defaultItems)
+                                if (go != null) curEquipItems.Add(go);
+                        }
+                        if (curHum.m_randomArmor != null && curHum.m_randomArmor.Length > 0 && curHum.m_randomArmor[0] != null)
+                        {
+                            curEquipItems.Add(curHum.m_randomArmor[0]);
+                        }
+                        if (curHum.m_randomSets != null && curHum.m_randomSets.Length > 0 && curHum.m_randomSets[0]?.m_items != null)
+                        {
+                            foreach (var go in curHum.m_randomSets[0].m_items)
+                                if (go != null) curEquipItems.Add(go);
+                        }
+                    }
 
                     SkinnedMeshRenderer bodySmr = model.GetComponentInChildren<SkinnedMeshRenderer>(includeInactive: true);
                     if (bodySmr != null)
@@ -1257,7 +1304,7 @@ namespace AshlandsDvergrMod
                             }
                         }
 
-                        foreach (GameObject itemPrefab in equipItems)
+                        foreach (GameObject itemPrefab in curEquipItems)
                         {
                             Transform attachSkin = itemPrefab.transform.Find("attach_skin");
                             if (attachSkin != null)
@@ -1314,18 +1361,18 @@ namespace AshlandsDvergrMod
 
                 GameObject camObj = new GameObject("ValidationCamera");
                 camObj.transform.SetParent(stageRoot.transform, false);
-                camObj.transform.localPosition = new Vector3(0f, 1.15f, -3.6f);
+                camObj.transform.localPosition = new Vector3(0f, 1.15f, -4.8f);
                 camObj.transform.LookAt(stageOrigin + new Vector3(0f, 1.05f, 0f));
 
                 Camera cam = camObj.AddComponent<Camera>();
                 cam.clearFlags = CameraClearFlags.SolidColor;
                 cam.backgroundColor = new Color(0.11f, 0.10f, 0.12f, 1f);
-                cam.fieldOfView = 42f;
+                cam.fieldOfView = 44f;
                 cam.nearClipPlane = 0.1f;
                 cam.farClipPlane = 50f;
 
-                int width = 1536;
-                int height = 768;
+                int width = 1920;
+                int height = 800;
                 RenderTexture rt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
                 cam.targetTexture = rt;
                 cam.Render();
@@ -1522,9 +1569,9 @@ namespace AshlandsDvergrMod
             return null;
         }
 
-        private static void EnsureBloodWeaponVisual(Transform root, VisEquipment visEq)
+        private static void EnsureBloodWeaponVisual(Transform root, VisEquipment visEq, int level)
         {
-            bool useBloodWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value;
+            bool useBloodWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value && level >= 3;
             Transform rightHand = visEq != null && visEq.m_rightHand != null
                 ? visEq.m_rightHand
                 : FindBone(root, "r.hand", "RightHand_Attach", "RightHand");
@@ -1583,14 +1630,32 @@ namespace AshlandsDvergrMod
             GameObject wepPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(wepPrefabName);
             if (wepPrefab == null)
             {
+                AshlandsDvergrPlugin.Log.LogError($"[EnsureBloodWeaponVisual] Failed to resolve weaponPrefab '{wepPrefabName}' for character '{charName}'");
                 return;
             }
 
             Transform attach = wepPrefab.transform.Find("attach") ?? wepPrefab.transform.Find("attach_r.hand");
             if (attach == null)
             {
+                foreach (Transform t in wepPrefab.GetComponentsInChildren<Transform>(includeInactive: true))
+                {
+                    if (t.name.IndexOf("attach", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        attach = t;
+                        break;
+                    }
+                }
+            }
+            if (attach == null)
+            {
+                List<string> childNames = new List<string>();
+                foreach (Transform t in wepPrefab.GetComponentsInChildren<Transform>(includeInactive: true))
+                    childNames.Add(t.name);
+                AshlandsDvergrPlugin.Log.LogError($"[EnsureBloodWeaponVisual] No attach transform on '{wepPrefab.name}', children=[{string.Join(", ", childNames)}]");
                 return;
             }
+
+            AshlandsDvergrPlugin.Log.LogInfo($"[EnsureBloodWeaponVisual] Equipping '{wepPrefab.name}' via attach '{attach.name}' to '{rightHand.name}' on '{charName}'");
 
             GameObject wepInst = UnityEngine.Object.Instantiate(attach.gameObject);
             wepInst.name = "AshlandsDvergr_BloodWeapon";
@@ -1783,7 +1848,7 @@ namespace AshlandsDvergrMod
             float lightMult = Mathf.Max(0f, AshlandsDvergrPlugin.AuraLightIntensity.Value);
 
             VisEquipment visEq = root.GetComponentInParent<VisEquipment>() ?? root.GetComponentInChildren<VisEquipment>();
-            EnsureBloodWeaponVisual(root, visEq);
+            EnsureBloodWeaponVisual(root, visEq, level);
             Ensure2StarBossEffects(root, level, coolEnabled, lightMult);
 
             Renderer[] renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
