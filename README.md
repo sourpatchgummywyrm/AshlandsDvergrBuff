@@ -1,6 +1,6 @@
 # Ashlands Dvergr Buff
 
-A Valheim BepInEx mod that turns Ashlands Dvergrs into formidable allies (or deadly adversaries) suited for the harsh southern biome, featuring star ranks, star-tiered visuals, boss VFX, separate mage scaling, ambient biome patrols, variety spawns, and 2-star advanced weapons.
+A Valheim BepInEx mod that makes Ashlands Dvergrs have that iron in them, featuring star-tiered visuals, boss VFX, separate mage scaling, ambient biome patrols, variety spawns, and 2-star advanced weapons.
 
 ## Features
 
@@ -11,7 +11,6 @@ A Valheim BepInEx mod that turns Ashlands Dvergrs into formidable allies (or dea
     - Fire Mages wield the **Staff of Fracturing** (`StaffClusterbomb`).
     - Ice Mages wield **Dundr** (`StaffLightning`).
     - Support Mages wield the **Staff of Frost** (`StaffIceShards`).
-  - Weapons remain equipped by the Dvergrs (no weapon drops on death).
 - **Tuned Health & Proportions**:
   - **Warriors & Rangers**: Configurable `HealthMultiplier` (default `1.20x` = 720 HP base) and `DamageMultiplier` (default `1.25x`). Star damage scales +25% at 1★; 2★ skips default star damage scaling since advanced weapons already provide high-tier stats.
   - **Dvergr Mages** (Fire, Ice, Support): Configurable `MageHealthMultiplier` (default `1.08x` = 486 HP base) and `MageDamageMultiplier` (default `1.10x`), keeping magic damage balanced and preserving the glass-cannon fantasy.
@@ -27,7 +26,7 @@ A Valheim BepInEx mod that turns Ashlands Dvergrs into formidable allies (or dea
 - **Star-Tier Visual Progression & Boss Visual Effects**:
   - **0★**: 100% original weathered ash-grey armor, blue-teal skin, cyan glowing eyes, and default arbalest (`1.0x` scale).
   - **1★ (Flameforged)**: Warm burnished bronze/copper armor, steely slate-blue skin, golden-amber glowing eyes, and default arbalest (`1.05x` scale).
-  - **2★ (Ashlord / Boss Tier)**: Volcanic crimson blood-iron armor with rune vein glow, dark obsidian-slate skin, vivid royal purple glowing eyes, arcane-purple weapon glow, and swirling crimson-arcane boss flames and nova spark ring wielding the Wound Ripper or upgraded Magic Staff (`1.10x` scale).
+  - **2★ (Ashlord / Boss Tier)**: Crimson blood-iron armor with rune vein glow, dark slate skin, purple glowing eyes, purple weapon glow, and swirling boss flames and nova spark ring wielding the Wound Ripper or upgraded Magic Staff (`1.10x` scale).
 
 ---
 
