@@ -16,7 +16,7 @@ namespace AshlandsDvergrMod
     {
         public const string PluginGuid = "com.valheim.ashlandsdvergrmod";
         public const string PluginName = "Ashlands Dvergr Boost";
-        public const string PluginVersion = "1.1.4";
+        public const string PluginVersion = "2.0.0";
 
         internal static ManualLogSource Log;
 

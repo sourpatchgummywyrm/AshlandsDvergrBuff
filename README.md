@@ -1,207 +1,85 @@
 # Ashlands Dvergr Buff
 
-A Valheim BepInEx mod to make it so Ashlands Dvergrs have that iron in them.
+A Valheim BepInEx mod that turns Ashlands Dvergrs into formidable allies (or deadly adversaries) suited for the harsh southern biome, featuring star ranks, star-tiered visuals, boss VFX, separate mage scaling, ambient biome patrols, variety spawns, and 2-star advanced weapons.
 
 ## Features
 
-- **Spawn Rate, Density & Variety (3x by default + Mage/Rogue Variety)**:
-  - Triples group spawn caps, spawn chance, and spawner weights for all Ashlands Dvergr spawners (`Spawner_DvergerAshlands`) and ruins.
-  - Divides respawn delays by 3 and enables respawning on ruin spawners (every ~6.7 minutes).
-  - Adds **ambient Dvergr patrol spawns** throughout the Ashlands biome (customizable group size, interval, and cap), outside lava zones.
-  - **Variety Dvergr Spawns (`VarietyDvergrSpawnChance = 20%`)**: Configurable chance for Ashlands Dvergr spawns to include Fire Mages (`DvergerMageFire`), Ice Mages (`DvergerMageIce`), Support Mages (`DvergerMageSupport`), and classic `Dverger` variants scaled to Ashlands health standards.
-- **Stars & Levels (Up to 2-Star / Level 3)**:
-  - Enables 1-star and 2-star Dvergrs in the Ashlands with a configurable 50% level-up chance per roll.
-  - Dynamically injects `LevelEffects` scale and tint setups so 1-star and 2-star Dvergrs visibly scale up (1.1x / 1.2x) alongside their HUD stars.
-- **Health (1.35x base, +40% per star)**:
-  - Increases the base health of `DvergerAshlands` from 600 to 810 HP by default (configurable `0.5` to `3.0`).
-  - Scales max and current health smoothly with star rank (`+40%` per star: Level 1: 810 HP, Level 2: 1134 HP, Level 3: 1458 HP).
-- **Ashlands Blood Weapons & Death Drop (`UseAshlandsBloodWeapons = true`)**:
-  - Instead of flat damage scaling via `DamageMultiplier`, equips Ashlands Dvergrs with their equivalent **Ashlands Blood Weapon**:
-    - **Crossbow wielders** (`DvergerAshlands`, `Dverger`): **Wound Ripper** (`CrossbowRipperBlood`)
-    - **Fire Mages** (`DvergerMageFire`): **Staff of Fracturing** (`StaffClusterbomb`)
-    - **Ice Mages** (`DvergerMageIce`): **Dundr** (`StaffLightning`)
-    - **Support Mages** (`DvergerMageSupport`): **Trollstav** (`StaffRedTroll`)
-  - Applies Ashlands Blood Weapon base damage (`1.35x`) plus the **Bloodstone missing-HP bonus** (`+0.5%` damage per `1%` missing HP, up to `+50%` at low health) and `+25%` per star.
-  - **Drops on Death**: Ashlands Dvergrs drop their equipped Ashlands Blood Weapon on death (`BloodWeaponDropChance = 100%` by default, quality matching their star level 1–3).
-  - If `UseAshlandsBloodWeapons = false`, falls back to `DamageMultiplier` (`1.25x` base, `+25%` per star).
-- **Slow Passive Healing**:
-  - Ashlands Dvergrs slowly regenerate health out of or between skirmishes (default `1.0%` max HP every `5` seconds).
-- **Star-Tiered & 2-Star Boss Visuals (`Enable2StarBossEffects = true`)**:
-  - **0-Star**: Original weathered tunic, cyan eyes, and equipped Blood Weapon.
-  - **1-Star**: `1.1x` scale, burnished bronze/copper tunic, and golden-amber eyes.
-  - **2-Star Boss Effects**: `1.2x` scale, volcanic crimson tunic with glowing boss veins (`_NoiseGlowEnabled`), vivid royal purple eyes, purple-arcane weapon glow, and **2-star Boss VFX** (crimson-violet blood-fire particles on hands & chest plus an arcane boss ring aura).
-- **Fully Configurable (GUI & Text File)**:
-  - All multipliers, spawn parameters, and star chances can be edited in real time via **BepInEx Configuration Manager** (press `F1` in-game) OR directly by editing the text configuration file.
-  - Editing and saving the `.cfg` text file in Notepad / any text editor reloads settings live without needing to restart the game.
+- **0★ & 1★ Keep Default Weapons; 2★ Wield Advanced Weapons**:
+  - **0-Star and 1-Star Dvergrs**: Wield their default Ashlands Dvergr weapons (e.g. `DvergerArbalest`) with standard scaled damage.
+  - **2-Star Ashlord Tier Dvergrs**: Equip and wield their equivalent Ashlands Blood Weapon or fully upgraded staff with Bloodstone missing-HP scaling:
+    - Crossbowmen wield the **Wound Ripper** (`CrossbowRipperBlood`).
+    - Fire Mages wield the **Staff of Fracturing** (`StaffClusterbomb`).
+    - Ice Mages wield **Dundr** (`StaffLightning`).
+    - Support Mages wield the **Staff of Frost** (`StaffIceShards`).
+  - Weapons remain equipped by the Dvergrs (no weapon drops on death).
+- **Tuned Health & Proportions**:
+  - **Warriors & Rangers**: Configurable `HealthMultiplier` (default `1.20x` = 720 HP base) and `DamageMultiplier` (default `1.25x`). Star damage scales +25% at 1★; 2★ skips default star damage scaling since advanced weapons already provide high-tier stats.
+  - **Dvergr Mages** (Fire, Ice, Support): Configurable `MageHealthMultiplier` (default `1.08x` = 486 HP base) and `MageDamageMultiplier` (default `1.10x`), keeping magic damage balanced and preserving the glass-cannon fantasy.
+  - Star health scaling is gentle (+25% HP per star: 0★ = 720 HP, 1★ = 900 HP, 2★ = 1080 HP for warriors; vanilla is +100% per star).
+  - Subtle visual scaling preserves dwarf stature (1★ = `1.05x`, 2★ = `1.10x`).
+- **Variety Dvergr Spawns in Ashlands**:
+  - `VarietyDvergrSpawnChance` (default 30%): Yields an exact 70% / 10% / 10% / 10% distribution across Ashlands Crossbow Rangers, Fire Mages, Ice Mages, and Support Mages in ruins and ambient patrols.
+- **Ambient Biome Spawns**:
+  - Patrols spawn naturally across the Ashlands biome outside lava hazards (configurable group sizes, spawn intervals, and zone caps).
+  - Spawner rates and ruin respawns are boosted.
+- **Slow Passive Regeneration**:
+  - Ashlands Dvergrs regenerate health passively (`PassiveHealPercentPerTick = 1.0%` every `5.0` seconds), scaling with star rank.
+- **Star-Tier Visual Progression & Boss Visual Effects**:
+  - **0★**: 100% original weathered ash-grey armor, blue-teal skin, cyan glowing eyes, and default arbalest (`1.0x` scale).
+  - **1★ (Flameforged)**: Warm burnished bronze/copper armor, steely slate-blue skin, golden-amber glowing eyes, and default arbalest (`1.05x` scale).
+  - **2★ (Ashlord / Boss Tier)**: Volcanic crimson blood-iron armor with rune vein glow, dark obsidian-slate skin, vivid royal purple glowing eyes, arcane-purple weapon glow, and swirling crimson-arcane boss flames and nova spark ring wielding the Wound Ripper or upgraded Magic Staff (`1.10x` scale).
 
 ---
 
 ## Configuration
 
-A config text file is automatically generated at `BepInEx/config/com.valheim.ashlandsdvergrmod.cfg` upon launching the game:
+The config file is located at `BepInEx/config/com.valheim.ashlandsdvergrmod.cfg` and supports live in-game reloads:
 
 ```ini
-[1. Spawning]
-
-## Global multiplier for Ashlands Dvergr spawn rate, spawn chance, group sizes, and spawner weights.
-## Default: 3.0 (3x faster spawns, 3x capacity).
-## Range: 0.5 to 10.0
-# Setting type: Single
-# Default value: 2
-# Acceptable value range: From 0.5 to 10
-SpawnRateMultiplier = 2
-
-## Base respawn interval in minutes for Ashlands Dvergr ruin/camp spawners (divided by SpawnRateMultiplier).
-## Default: 6.7 minutes.
-## Range: 0.5 to 60.0
-# Setting type: Single
-# Default value: 6.7
-# Acceptable value range: From 0.5 to 60
-CampRespawnIntervalMinutes = 6.7
+[1. Spawning & Respawn Rates]
+SpawnRateMultiplier = 3
+CampRespawnIntervalMinutes = 6.67
+VarietyDvergrSpawnChance = 30
 
 [2. Ambient Spawns]
-
-## Add ambient Dvergr patrol spawns throughout the Ashlands biome in addition to camp/ruin spawners.
-## Spawns are server/zone-owner authoritative outside lava.
-## Default: true
-# Setting type: Boolean
-# Default value: true
 EnableAmbientAshlandsSpawns = true
-
-## Maximum active ambient Dvergrs allowed per Ashlands sector.
-## Default: 6.
-## Range: 1 to 30
-# Setting type: Int32
-# Default value: 6
-# Acceptable value range: From 1 to 30
 AmbientMaxSpawned = 6
-
-## Base seconds between ambient spawn checks (divided by SpawnRateMultiplier).
-## Default: 100 seconds.
-## Range: 10.0 to 600.0
-# Setting type: Single
-# Default value: 100
-# Acceptable value range: From 10 to 600
 AmbientSpawnInterval = 100
-
-## Percentage chance (0-100) to spawn ambient Dvergrs each interval check.
-## Default: 50%.
-## Range: 1.0 to 100.0
-# Setting type: Single
-# Default value: 25
-# Acceptable value range: From 1 to 100
-AmbientSpawnChance = 25
-
-## Minimum group size for ambient Ashlands Dvergr patrols.
-## Default: 2.
-## Range: 1 to 10
-# Setting type: Int32
-# Default value: 2
-# Acceptable value range: From 1 to 10
+AmbientSpawnChance = 50
 AmbientGroupMin = 2
-
-## Maximum group size for ambient Ashlands Dvergr patrols.
-## Default: 4.
-## Range: 1 to 15
-# Setting type: Int32
-# Default value: 4
-# Acceptable value range: From 1 to 15
 AmbientGroupMax = 4
-
-## Minimum distance in meters from players to spawn ambient Dvergrs.
-## Default: 40 meters.
-## Range: 10.0 to 100.0
-# Setting type: Single
-# Default value: 40
-# Acceptable value range: From 10 to 100
 AmbientSpawnRadiusMin = 40
-
-## Maximum distance in meters from players to spawn ambient Dvergrs.
-## Default: 80 meters.
-## Range: 40.0 to 200.0
-# Setting type: Single
-# Default value: 80
-# Acceptable value range: From 40 to 200
 AmbientSpawnRadiusMax = 80
 
 [3. Combat Stats]
-
-## Base health multiplier for Dvergrs in the Ashlands (default: 1.35 = +35% base HP: 600 -> 810).
-## Star levels add +40% HP per star (0-star: 810 HP, 1-star: 1134 HP, 2-star: 1458 HP).
-## Range: 0.5 to 3.0
-# Setting type: Single
-# Default value: 1.35
-# Acceptable value range: From 0.5 to 3
-HealthMultiplier = 1.35
-
-## Outgoing damage multiplier for Ashlands Dvergrs (melee strikes, arbalest bolts, and magic AOEs).
-## Default: 1.25 (+25% base damage, with +25% per star level: 1.25x / 1.56x / 1.88x).
-## Range: 0.5 to 3.0
-# Setting type: Single
-# Default value: 1.25
-# Acceptable value range: From 0.5 to 3
+HealthMultiplier = 1.20
 DamageMultiplier = 1.25
+MageHealthMultiplier = 1.08
+MageDamageMultiplier = 1.10
+UseAshlandsBloodWeapons = true
+PassiveHealPercentPerTick = 1.0
+PassiveHealIntervalSeconds = 5.0
 
 [4. Stars & Levels]
-
-## Minimum level for Ashlands Dvergrs (1 = 0 stars, 2 = 1 star, 3 = 2 stars).
-## Default: 1 (0 stars).
-## Range: 1 to 3
-# Setting type: Int32
-# Default value: 1
-# Acceptable value range: From 1 to 3
 MinLevel = 1
-
-## Maximum level for Ashlands Dvergrs (1 = 0 stars, 2 = 1 star, 3 = 2 stars).
-## Default: 3 (2 stars).
-## Range: 1 to 3
-# Setting type: Int32
-# Default value: 3
-# Acceptable value range: From 1 to 3
 MaxLevel = 3
-
-## Percentage chance (0-100) per star roll to upgrade to next rank.
-## Default: 50%.
-## Range: 0.0 to 100.0
-# Setting type: Single
-# Default value: 20
-# Acceptable value range: From 0 to 100
-LevelUpChance = 20
-
-## Visual body scale multiplier for 1-star Ashlands Dvergrs.
-## Default: 1.1 (10% larger).
-## Range: 1.0 to 1.5
-# Setting type: Single
-# Default value: 1.1
-# Acceptable value range: From 1 to 1.5
-VisualScale1Star = 1.1
-
-## Visual body scale multiplier for 2-star Ashlands Dvergrs.
-## Default: 1.2 (20% larger).
-## Range: 1.0 to 2.0
-# Setting type: Single
-# Default value: 1.15
-# Acceptable value range: From 1 to 2
-VisualScale2Star = 1.15
+LevelUpChance = 50
+VisualScale1Star = 1.05
+VisualScale2Star = 1.10
+EnableCoolVisuals = true
+Enable2StarBossEffects = true
+AuraLightIntensity = 0.6
 ```
 
 ---
 
 ## Installation
 
-### With Mod Manager (r2modman / Thunderstore / Gale)
-1. Click **Install with Mod Manager**.
-2. Run the game.
+### Mod Manager (r2modman / Thunderstore / Gale)
+1. Search for **Ashlands Dvergr Buff** or install from Thunderstore.
+2. Launch Valheim via the mod manager.
 
 ### Manual Installation
 1. Ensure [BepInExPack Valheim](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/) is installed.
 2. Extract `AshlandsDvergrMod.dll` into your `<Valheim>/BepInEx/plugins/` directory.
-3. Launch the game.
-
----
-
-## Multiplayer Notice
-
-Valheim uses distributed sector authority: the player closest to an area (or the dedicated server) owns the sector and calculates creature spawns.
-- For best results on a dedicated server, install this mod on the **server**.
-- In peer-to-peer / co-op games, having this mod on the host / all players ensures seamless spawns and synchronized stats.
+3. Launch Valheim.
