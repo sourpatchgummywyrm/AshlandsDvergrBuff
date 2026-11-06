@@ -143,28 +143,28 @@ namespace AshlandsDvergrMod
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 3. Combat Stats & Passive Healing
-            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 2.0f,
+            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 1.35f,
                 new ConfigDescription(
-                    "Base health multiplier for Dvergrs in the Ashlands (default: 2.0 = 2x base HP: 600 -> 1200).\n" +
-                    "Higher star levels scale up from this base.\n" +
-                    "Range: 0.5 to 10.0",
-                    new AcceptableValueRange<float>(0.5f, 10.0f),
+                    "Base health multiplier for Dvergrs in the Ashlands (default: 1.35 = +35% base HP: 600 -> 810).\n" +
+                    "Star levels add +40% HP per star (0-star: 810 HP, 1-star: 1134 HP, 2-star: 1458 HP).\n" +
+                    "Range: 0.5 to 3.0",
+                    new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 2.0f,
+            DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 1.25f,
                 new ConfigDescription(
                     "Outgoing damage multiplier for Ashlands Dvergrs (melee strikes, arbalest bolts, and magic AOEs).\n" +
-                    "Default: 2.0 (2x damage, plus vanilla +50% per star level).\n" +
-                    "Range: 0.5 to 10.0",
-                    new AcceptableValueRange<float>(0.5f, 10.0f),
+                    "Default: 1.25 (+25% base damage, with +25% per star level: 1.25x / 1.56x / 1.88x).\n" +
+                    "Range: 0.5 to 3.0",
+                    new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            PassiveHealPercentPerTick = Config.Bind("3. Combat Stats", "PassiveHealPercentPerTick", 2.0f,
+            PassiveHealPercentPerTick = Config.Bind("3. Combat Stats", "PassiveHealPercentPerTick", 1.0f,
                 new ConfigDescription(
                     "Percentage of max health regenerated per heal tick by Ashlands Dvergrs (0 = disabled).\n" +
-                    "Default: 2.0% every 5 seconds (~24 HP/tick at 0-star, ~72 HP/tick at 2-star).\n" +
-                    "Range: 0.0 to 25.0",
-                    new AcceptableValueRange<float>(0.0f, 25.0f),
+                    "Default: 1.0% every 5 seconds (~8 HP/tick at 0-star, ~15 HP/tick at 2-star).\n" +
+                    "Range: 0.0 to 10.0",
+                    new AcceptableValueRange<float>(0.0f, 10.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             PassiveHealIntervalSeconds = Config.Bind("3. Combat Stats", "PassiveHealIntervalSeconds", 5.0f,
@@ -533,10 +533,18 @@ namespace AshlandsDvergrMod
                 {
                     __instance.SetLevel(rolledLevel);
                 }
-                float maxHp = __instance.GetMaxHealthBase() * __instance.GetLevel();
+                float maxHp = CalculateScaledMaxHealth(__instance);
                 __instance.SetMaxHealth(maxHp);
                 __instance.SetHealth(maxHp);
             }
+        }
+
+        private static float CalculateScaledMaxHealth(Character ch)
+        {
+            int stars = Mathf.Max(0, ch.GetLevel() - 1);
+            // +40% HP per star (1.0x / 1.4x / 1.8x) instead of vanilla +100% per star (1x / 2x / 3x)
+            float starMult = 1f + stars * 0.40f;
+            return ch.GetMaxHealthBase() * starMult;
         }
 
         [HarmonyPatch(typeof(Character), "SetLevel")]
@@ -549,7 +557,8 @@ namespace AshlandsDvergrMod
             }
             if (__instance.IsOwner())
             {
-                float maxHp = __instance.GetMaxHealth();
+                float maxHp = CalculateScaledMaxHealth(__instance);
+                __instance.SetMaxHealth(maxHp);
                 __instance.SetHealth(maxHp);
             }
             AshlandsDvergrEnhancer enhancer = __instance.GetComponent<AshlandsDvergrEnhancer>();
@@ -791,7 +800,12 @@ namespace AshlandsDvergrMod
         {
             if (hitData != null && IsAshlandsDvergr(___m_character))
             {
-                hitData.m_damage.Modify(Mathf.Max(0.1f, DamageMultiplier.Value));
+                int stars = Mathf.Max(0, ___m_character.GetLevel() - 1);
+                // Vanilla Attack already multiplied damage by (1 + stars * 0.50); rescale to gentler +25% per star (1 + stars * 0.25)
+                float vanillaStarMult = 1f + stars * 0.50f;
+                float gentleStarMult = 1f + stars * 0.25f;
+                float mult = Mathf.Max(0.1f, DamageMultiplier.Value) * (gentleStarMult / vanillaStarMult);
+                hitData.m_damage.Modify(mult);
             }
         }
 
@@ -805,7 +819,8 @@ namespace AshlandsDvergrMod
             }
             if (hitData == null || !__instance.m_useAttackSettings)
             {
-                float mult = Mathf.Max(0.1f, DamageMultiplier.Value) * (1f + Mathf.Max(0, owner.GetLevel() - 1) * 0.5f);
+                int stars = Mathf.Max(0, owner.GetLevel() - 1);
+                float mult = Mathf.Max(0.1f, DamageMultiplier.Value) * (1f + stars * 0.25f);
                 __instance.m_damage.Modify(mult);
             }
         }

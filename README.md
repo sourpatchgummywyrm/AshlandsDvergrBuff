@@ -11,13 +11,13 @@ A Valheim BepInEx mod to make it so Ashlands Dvergrs have that iron in them.
 - **Stars & Levels (Up to 2-Star / Level 3)**:
   - Enables 1-star and 2-star Dvergrs in the Ashlands with a configurable 50% level-up chance per roll.
   - Dynamically injects `LevelEffects` scale and tint setups so 1-star and 2-star Dvergrs visibly scale up (1.1x / 1.2x) alongside their HUD stars.
-- **Health (2x base, scaling to 6x at 2-Star)**:
-  - Doubles the base health of `DvergerAshlands` from 600 to 1200 HP by default.
-  - Automatically scales max and current health with star rank (Level 1: 1200 HP, Level 2: 2400 HP, Level 3: 3600 HP).
-- **Damage (2x base multiplier)**:
-  - Doubles outgoing damage across melee strikes, Arbalest bolts, and mage spells/AOEs, stacking with the vanilla +50% per star level bonus.
+- **Health (1.35x base, +40% per star)**:
+  - Increases the base health of `DvergerAshlands` from 600 to 810 HP by default (configurable `0.5` to `3.0`).
+  - Scales max and current health smoothly with star rank (`+40%` per star: Level 1: 810 HP, Level 2: 1134 HP, Level 3: 1458 HP).
+- **Damage (1.25x base, +25% per star)**:
+  - Boosts outgoing damage by +25% across melee strikes, Arbalest bolts, and mage spells/AOEs, with gentler +25% per-star scaling (`1.25x` at 0-star, `1.56x` at 1-star, `1.88x` at 2-star; configurable `0.5` to `3.0`).
 - **Slow Passive Healing**:
-  - Ashlands Dvergrs slowly regenerate health out of or between skirmishes (default `2.0%` max HP every `5` seconds).
+  - Ashlands Dvergrs slowly regenerate health out of or between skirmishes (default `1.0%` max HP every `5` seconds).
 - **Flameforged Visuals**:
   - Star-ranked Ashlands Dvergrs scale up (`1.12x` / `1.25x`), gain crimson-bronze / obsidian-gold armor tinting, glowing molten runes/trim, and a flickering volcanic forge-ember aura light.
 - **Fully Configurable (GUI & Text File)**:
@@ -116,21 +116,21 @@ AmbientSpawnRadiusMax = 80
 
 [3. Combat Stats]
 
-## Base health multiplier for Dvergrs in the Ashlands (default: 2.0 = 2x base HP: 600 -> 1200).
-## Higher star levels scale up from this base.
-## Range: 0.5 to 10.0
+## Base health multiplier for Dvergrs in the Ashlands (default: 1.35 = +35% base HP: 600 -> 810).
+## Star levels add +40% HP per star (0-star: 810 HP, 1-star: 1134 HP, 2-star: 1458 HP).
+## Range: 0.5 to 3.0
 # Setting type: Single
-# Default value: 2
-# Acceptable value range: From 0.5 to 10
-HealthMultiplier = 2
+# Default value: 1.35
+# Acceptable value range: From 0.5 to 3
+HealthMultiplier = 1.35
 
 ## Outgoing damage multiplier for Ashlands Dvergrs (melee strikes, arbalest bolts, and magic AOEs).
-## Default: 2.0 (2x damage, plus vanilla +50% per star level).
-## Range: 0.5 to 10.0
+## Default: 1.25 (+25% base damage, with +25% per star level: 1.25x / 1.56x / 1.88x).
+## Range: 0.5 to 3.0
 # Setting type: Single
-# Default value: 2
-# Acceptable value range: From 0.5 to 10
-DamageMultiplier = 2
+# Default value: 1.25
+# Acceptable value range: From 0.5 to 3
+DamageMultiplier = 1.25
 
 [4. Stars & Levels]
 
