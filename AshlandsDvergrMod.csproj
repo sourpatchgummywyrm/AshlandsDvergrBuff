@@ -52,6 +52,14 @@
       <HintPath>$(ManagedDir)/UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule">
+      <HintPath>$(ManagedDir)/UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(ManagedDir)/UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="SoftReferenceableAssets">
       <HintPath>$(ManagedDir)/SoftReferenceableAssets.dll</HintPath>
       <Private>false</Private>

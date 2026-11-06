@@ -16,13 +16,14 @@ namespace AshlandsDvergrMod
     {
         public const string PluginGuid = "com.valheim.ashlandsdvergrmod";
         public const string PluginName = "Ashlands Dvergr Boost";
-        public const string PluginVersion = "1.0.7";
+        public const string PluginVersion = "1.0.8";
 
         internal static ManualLogSource Log;
 
         // Configuration entries
         internal static ConfigEntry<float> SpawnRateMultiplier;
         internal static ConfigEntry<float> CampRespawnIntervalMinutes;
+        internal static ConfigEntry<float> VarietyDvergrSpawnChance;
 
         internal static ConfigEntry<bool> EnableAmbientAshlandsSpawns;
         internal static ConfigEntry<int> AmbientMaxSpawned;
@@ -35,6 +36,8 @@ namespace AshlandsDvergrMod
 
         internal static ConfigEntry<float> HealthMultiplier;
         internal static ConfigEntry<float> DamageMultiplier;
+        internal static ConfigEntry<bool> UseAshlandsBloodWeapons;
+        internal static ConfigEntry<float> BloodWeaponDropChance;
         internal static ConfigEntry<float> PassiveHealPercentPerTick;
         internal static ConfigEntry<float> PassiveHealIntervalSeconds;
 
@@ -44,12 +47,22 @@ namespace AshlandsDvergrMod
         internal static ConfigEntry<float> VisualScale1Star;
         internal static ConfigEntry<float> VisualScale2Star;
         internal static ConfigEntry<bool> EnableCoolVisuals;
+        internal static ConfigEntry<bool> Enable2StarBossEffects;
         internal static ConfigEntry<float> AuraLightIntensity;
+
+        internal static readonly string[] VarietyDvergrPrefabNames =
+        {
+            "DvergerMageFire",
+            "DvergerMageIce",
+            "DvergerMageSupport",
+            "Dverger"
+        };
 
         private static readonly HashSet<int> PatchedSpawnLists = new HashSet<int>();
         private static readonly HashSet<int> PatchedCreatureSpawners = new HashSet<int>();
         private static readonly HashSet<int> PatchedSpawnAreas = new HashSet<int>();
         private static readonly Dictionary<int, float> OriginalPrefabHealth = new Dictionary<int, float>();
+        private static readonly Dictionary<string, GameObject> CachedSoftRefPrefabs = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
 
         private static FileSystemWatcher _configFileWatcher;
         private static DateTime _lastConfigReloadTime = DateTime.MinValue;
@@ -75,6 +88,14 @@ namespace AshlandsDvergrMod
                     "Default: 6.7 minutes.\n" +
                     "Range: 0.5 to 60.0",
                     new AcceptableValueRange<float>(0.5f, 60.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            VarietyDvergrSpawnChance = Config.Bind("1. Spawning", "VarietyDvergrSpawnChance", 20f,
+                new ConfigDescription(
+                    "Percentage chance (0-100) for Ashlands Dvergr spawns to be a Mage (Fire, Ice, or Support) or classic Dvergr variant instead of only DvergerAshlands.\n" +
+                    "Default: 20%.\n" +
+                    "Range: 0.0 to 100.0",
+                    new AcceptableValueRange<float>(0.0f, 100.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 2. Ambient Spawning
@@ -153,10 +174,25 @@ namespace AshlandsDvergrMod
 
             DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 1.25f,
                 new ConfigDescription(
-                    "Outgoing damage multiplier for Ashlands Dvergrs (melee strikes, arbalest bolts, and magic AOEs).\n" +
+                    "Outgoing damage multiplier for Ashlands Dvergrs when UseAshlandsBloodWeapons is false (melee strikes, arbalest bolts, and magic AOEs).\n" +
                     "Default: 1.25 (+25% base damage, with +25% per star level: 1.25x / 1.56x / 1.88x).\n" +
                     "Range: 0.5 to 3.0",
                     new AcceptableValueRange<float>(0.5f, 3.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            UseAshlandsBloodWeapons = Config.Bind("3. Combat Stats", "UseAshlandsBloodWeapons", true,
+                new ConfigDescription(
+                    "Instead of scaling damage via DamageMultiplier, equip Ashlands Dvergrs with their equivalent Ashlands Blood Weapon (Wound Ripper / CrossbowRipperBlood for crossbowmen, Staff of Fracturing / Dundr / Trollstav for mages) with Bloodstone missing-HP damage scaling and drop it on death.\n" +
+                    "Default: true",
+                    null,
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            BloodWeaponDropChance = Config.Bind("3. Combat Stats", "BloodWeaponDropChance", 100f,
+                new ConfigDescription(
+                    "Percentage chance (0-100) for an Ashlands Dvergr to drop their equipped Ashlands Blood Weapon on death when UseAshlandsBloodWeapons is enabled.\n" +
+                    "Default: 100%.\n" +
+                    "Range: 0.0 to 100.0",
+                    new AcceptableValueRange<float>(0.0f, 100.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
             PassiveHealPercentPerTick = Config.Bind("3. Combat Stats", "PassiveHealPercentPerTick", 1.0f,
@@ -219,6 +255,13 @@ namespace AshlandsDvergrMod
             EnableCoolVisuals = Config.Bind("4. Stars & Levels", "EnableCoolVisuals", true,
                 new ConfigDescription(
                     "Enhances starred Ashlands Dvergrs with subtle veteran armor shading and a soft warm rim light while preserving their original textures.\n" +
+                    "Default: true",
+                    null,
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            Enable2StarBossEffects = Config.Bind("4. Stars & Levels", "Enable2StarBossEffects", true,
+                new ConfigDescription(
+                    "Adds boss visual effects (glowing boss aura, hand & chest boss energy particles, and arcane boss runes) to 2-star Ashlands Dvergrs.\n" +
                     "Default: true",
                     null,
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -459,6 +502,88 @@ namespace AshlandsDvergrMod
             }
         }
 
+        internal static string GetEquivalentBloodWeaponPrefabName(string characterName)
+        {
+            if (string.IsNullOrEmpty(characterName))
+            {
+                return "CrossbowRipperBlood";
+            }
+            if (characterName.IndexOf("MageFire", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "StaffClusterbomb";
+            }
+            if (characterName.IndexOf("MageIce", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "StaffLightning";
+            }
+            if (characterName.IndexOf("MageSupport", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                characterName.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "StaffRedTroll";
+            }
+            return "CrossbowRipperBlood";
+        }
+
+        internal static GameObject ResolvePrefabByNameOrAssetId(string prefabName, string assetIdHex = null)
+        {
+            if (string.IsNullOrEmpty(prefabName))
+            {
+                return null;
+            }
+            if (ObjectDB.instance != null)
+            {
+                GameObject item = ObjectDB.instance.GetItemPrefab(prefabName);
+                if (item != null)
+                {
+                    return item;
+                }
+            }
+            if (ZNetScene.instance != null)
+            {
+                GameObject prefab = ZNetScene.instance.GetPrefab(prefabName);
+                if (prefab != null)
+                {
+                    return prefab;
+                }
+            }
+            if (CachedSoftRefPrefabs.TryGetValue(prefabName, out GameObject cached) && cached != null)
+            {
+                return cached;
+            }
+            if (string.IsNullOrEmpty(assetIdHex))
+            {
+                assetIdHex = prefabName switch
+                {
+                    "CrossbowRipperBlood" => "483a950c53776e74ea40aef310fefbb2",
+                    "StaffClusterbomb" => "d4812897e4412e540b7fa649d25b99d5",
+                    "StaffLightning" => "90f15fa074aa08a478750566117d84d0",
+                    "StaffRedTroll" => "87eebe8749379744eacfa37ea818aeab",
+                    "fx_fader_chestfire" => "affcfc1b631dafe4ba5eb9388ec6196a",
+                    "fx_goblinking_nova_hand" => "ebf058290cad64993843155e16b4b6f6",
+                    "fx_DvergerMage_Nova_ring" => "c1b9194e4cba6e648aacfd970dd12da9",
+                    "vfx_crossbow_blood_fire" => "50280cda7c9d5f64b96020f59ae3f945",
+                    _ => null
+                };
+            }
+            if (!string.IsNullOrEmpty(assetIdHex) && AssetID.TryParse(assetIdHex, out AssetID assetId))
+            {
+                try
+                {
+                    SoftReference<GameObject> sr = new SoftReference<GameObject>(assetId);
+                    sr.Load();
+                    if (sr.Asset != null)
+                    {
+                        CachedSoftRefPrefabs[prefabName] = sr.Asset;
+                        return sr.Asset;
+                    }
+                }
+                catch
+                {
+                }
+            }
+            return null;
+        }
+
         [HarmonyPatch(typeof(ZNetScene), "Awake")]
         [HarmonyPostfix]
         private static void ZNetScene_Awake_Postfix(ZNetScene __instance)
@@ -497,7 +622,9 @@ namespace AshlandsDvergrMod
             EnsureVisualStarSetups(__instance);
             if (__instance.gameObject.name.IndexOf("Ashlands", StringComparison.OrdinalIgnoreCase) < 0)
             {
-                __instance.m_health *= Mathf.Max(0.1f, HealthMultiplier.Value);
+                // Elevate variety Mistlands Dvergrs (Mages, classic Dverger) spawned in Ashlands to Ashlands base HP (600) before multiplier
+                float ashlandsBaseHp = Mathf.Max(__instance.m_health, 600f);
+                __instance.m_health = ashlandsBaseHp * Mathf.Max(0.1f, HealthMultiplier.Value);
             }
         }
 
@@ -611,9 +738,10 @@ namespace AshlandsDvergrMod
 
         [HarmonyPatch(typeof(CreatureSpawner), "Spawn")]
         [HarmonyPrefix]
-        private static void CreatureSpawner_Spawn_Prefix(CreatureSpawner __instance, Location ___m_location)
+        private static void CreatureSpawner_Spawn_Prefix(CreatureSpawner __instance, Location ___m_location, out GameObject __state)
         {
-            if (___m_location == null || __instance.m_creaturePrefab == null)
+            __state = null;
+            if (__instance == null || __instance.m_creaturePrefab == null)
             {
                 return;
             }
@@ -621,18 +749,43 @@ namespace AshlandsDvergrMod
                 (__instance.m_creaturePrefab.name.IndexOf("Ashlands", StringComparison.OrdinalIgnoreCase) >= 0 ||
                  IsInAshlands(__instance.transform.position)))
             {
-                if (___m_location.m_enemyMinLevelOverride >= 0)
+                if (___m_location != null)
                 {
-                    ___m_location.m_enemyMinLevelOverride = Mathf.Max(___m_location.m_enemyMinLevelOverride, MinLevel.Value);
+                    if (___m_location.m_enemyMinLevelOverride >= 0)
+                    {
+                        ___m_location.m_enemyMinLevelOverride = Mathf.Max(___m_location.m_enemyMinLevelOverride, MinLevel.Value);
+                    }
+                    if (___m_location.m_enemyMaxLevelOverride >= 0)
+                    {
+                        ___m_location.m_enemyMaxLevelOverride = Mathf.Max(___m_location.m_enemyMaxLevelOverride, MaxLevel.Value);
+                    }
+                    if (___m_location.m_enemyLevelUpOverride >= 0f)
+                    {
+                        ___m_location.m_enemyLevelUpOverride = Mathf.Max(___m_location.m_enemyLevelUpOverride, LevelUpChance.Value);
+                    }
                 }
-                if (___m_location.m_enemyMaxLevelOverride >= 0)
+
+                float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
+                if (varietyChance > 0f && ZNetScene.instance != null && UnityEngine.Random.Range(0f, 100f) < varietyChance)
                 {
-                    ___m_location.m_enemyMaxLevelOverride = Mathf.Max(___m_location.m_enemyMaxLevelOverride, MaxLevel.Value);
+                    string pickName = VarietyDvergrPrefabNames[UnityEngine.Random.Range(0, VarietyDvergrPrefabNames.Length)];
+                    GameObject altPrefab = ZNetScene.instance.GetPrefab(pickName);
+                    if (altPrefab != null)
+                    {
+                        __state = __instance.m_creaturePrefab;
+                        __instance.m_creaturePrefab = altPrefab;
+                    }
                 }
-                if (___m_location.m_enemyLevelUpOverride >= 0f)
-                {
-                    ___m_location.m_enemyLevelUpOverride = Mathf.Max(___m_location.m_enemyLevelUpOverride, LevelUpChance.Value);
-                }
+            }
+        }
+
+        [HarmonyPatch(typeof(CreatureSpawner), "Spawn")]
+        [HarmonyPostfix]
+        private static void CreatureSpawner_Spawn_Postfix(CreatureSpawner __instance, GameObject __state)
+        {
+            if (__instance != null && __state != null)
+            {
+                __instance.m_creaturePrefab = __state;
             }
         }
 
@@ -673,6 +826,7 @@ namespace AshlandsDvergrMod
                 return;
             }
             bool hasAshlandsDvergr = false;
+            float baseWeight = 1f;
             foreach (SpawnArea.SpawnData sd in __instance.m_prefabs)
             {
                 if (sd != null && IsDvergrPrefab(sd.m_prefab) &&
@@ -683,6 +837,7 @@ namespace AshlandsDvergrMod
                     sd.m_minLevel = Mathf.Max(sd.m_minLevel, MinLevel.Value);
                     sd.m_maxLevel = Mathf.Max(sd.m_maxLevel, MaxLevel.Value);
                     sd.m_weight *= Mathf.Max(1f, SpawnRateMultiplier.Value);
+                    baseWeight = Mathf.Max(baseWeight, sd.m_weight);
                 }
             }
             if (hasAshlandsDvergr)
@@ -693,6 +848,26 @@ namespace AshlandsDvergrMod
                 __instance.m_spawnIntervalSec = Mathf.Max(1f, __instance.m_spawnIntervalSec / mult);
                 __instance.m_maxNear = Mathf.CeilToInt(__instance.m_maxNear * mult);
                 __instance.m_maxTotal = Mathf.CeilToInt(__instance.m_maxTotal * mult);
+
+                float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
+                if (varietyChance > 0f && ZNetScene.instance != null)
+                {
+                    float perVariantWeight = Mathf.Max(0.05f, (baseWeight * (varietyChance / 100f)) / VarietyDvergrPrefabNames.Length);
+                    foreach (string varName in VarietyDvergrPrefabNames)
+                    {
+                        GameObject varPrefab = ZNetScene.instance.GetPrefab(varName);
+                        if (varPrefab != null)
+                        {
+                            __instance.m_prefabs.Add(new SpawnArea.SpawnData
+                            {
+                                m_prefab = varPrefab,
+                                m_weight = perVariantWeight,
+                                m_minLevel = Mathf.Max(1, MinLevel.Value),
+                                m_maxLevel = Mathf.Max(MinLevel.Value, MaxLevel.Value)
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -780,18 +955,65 @@ namespace AshlandsDvergrMod
                     };
                     list.m_spawners.Add(ambientDvergr);
                     Log.LogInfo($"Added ambient DvergerAshlands SpawnData (max={ambientDvergr.m_maxSpawned}, interval={ambientDvergr.m_spawnInterval}s, chance={ambientDvergr.m_spawnChance}%, levels={ambientDvergr.m_minLevel}-{ambientDvergr.m_maxLevel}).");
+
+                    float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
+                    if (varietyChance > 0f)
+                    {
+                        float varChance = Mathf.Clamp(AmbientSpawnChance.Value * (varietyChance / 100f), 1f, 100f);
+                        int varMaxSpawned = Mathf.Max(1, AmbientMaxSpawned.Value / 2);
+                        foreach (string varName in VarietyDvergrPrefabNames)
+                        {
+                            GameObject varPrefab = ZNetScene.instance.GetPrefab(varName);
+                            if (varPrefab == null)
+                            {
+                                continue;
+                            }
+                            SpawnSystem.SpawnData varSpawn = new SpawnSystem.SpawnData
+                            {
+                                m_name = "Ashlands_Dvergr_Variety_" + varName,
+                                m_enabled = true,
+                                m_prefab = varPrefab,
+                                m_biome = Heightmap.Biome.AshLands,
+                                m_biomeArea = Heightmap.BiomeArea.Everything,
+                                m_maxSpawned = varMaxSpawned,
+                                m_spawnInterval = Mathf.Max(10f, (AmbientSpawnInterval.Value * 1.5f) / mult),
+                                m_spawnChance = varChance,
+                                m_spawnDistance = 18f,
+                                m_spawnRadiusMin = minRad,
+                                m_spawnRadiusMax = maxRad,
+                                m_groupSizeMin = 1,
+                                m_groupSizeMax = Mathf.Max(1, AmbientGroupMax.Value / 2),
+                                m_groupRadius = 6f,
+                                m_spawnAtDay = true,
+                                m_spawnAtNight = true,
+                                m_minAltitude = 1f,
+                                m_maxAltitude = 1000f,
+                                m_minTilt = 0f,
+                                m_maxTilt = 35f,
+                                m_inForest = true,
+                                m_outsideForest = true,
+                                m_inLava = false,
+                                m_outsideLava = true,
+                                m_groundOffset = 0.5f,
+                                m_minLevel = Mathf.Max(1, MinLevel.Value),
+                                m_maxLevel = Mathf.Max(MinLevel.Value, MaxLevel.Value),
+                                m_overrideLevelupChance = Mathf.Clamp(LevelUpChance.Value, 0f, 100f)
+                            };
+                            list.m_spawners.Add(varSpawn);
+                        }
+                        Log.LogInfo($"Added Ashlands variety Dvergr ambient spawns ({string.Join(", ", VarietyDvergrPrefabNames)}) with {varietyChance}% variety ratio.");
+                    }
                 }
             }
         }
 
-        [HarmonyPatch(typeof(SpawnSystem), "GetLevelUpChance", new Type[] { typeof(Vector3), typeof(float) })]
-        [HarmonyPostfix]
-        private static void SpawnSystem_GetLevelUpChance_Postfix(Vector3 position, float levelUpChanceOverride, ref float __result)
+        private static float CalculateBloodWeaponDamageMultiplier(Character ch)
         {
-            if (levelUpChanceOverride >= LevelUpChance.Value && IsInAshlands(position))
-            {
-                __result = Mathf.Max(__result, Mathf.Clamp(levelUpChanceOverride, 0f, 100f));
-            }
+            // Equivalent Ashlands Blood Weapon (CrossbowRipperBlood / Ashlands Staff) base ratio (~1.35x)
+            // plus Bloodstone effect: +0.5% damage per 1% missing health (up to +50% at low HP)
+            float missingHpRatio = ch != null ? Mathf.Clamp01(1f - ch.GetHealthPercentage()) : 0f;
+            float bloodstoneBonus = 1f + missingHpRatio * 0.50f;
+            return 1.35f * bloodstoneBonus;
         }
 
         [HarmonyPatch(typeof(SEMan), "ModifyAttack")]
@@ -804,7 +1026,10 @@ namespace AshlandsDvergrMod
                 // Vanilla Attack already multiplied damage by (1 + stars * 0.50); rescale to gentler +25% per star (1 + stars * 0.25)
                 float vanillaStarMult = 1f + stars * 0.50f;
                 float gentleStarMult = 1f + stars * 0.25f;
-                float mult = Mathf.Max(0.1f, DamageMultiplier.Value) * (gentleStarMult / vanillaStarMult);
+                float baseMult = UseAshlandsBloodWeapons.Value
+                    ? CalculateBloodWeaponDamageMultiplier(___m_character)
+                    : Mathf.Max(0.1f, DamageMultiplier.Value);
+                float mult = baseMult * (gentleStarMult / vanillaStarMult);
                 hitData.m_damage.Modify(mult);
             }
         }
@@ -820,9 +1045,66 @@ namespace AshlandsDvergrMod
             if (hitData == null || !__instance.m_useAttackSettings)
             {
                 int stars = Mathf.Max(0, owner.GetLevel() - 1);
-                float mult = Mathf.Max(0.1f, DamageMultiplier.Value) * (1f + stars * 0.25f);
+                float baseMult = UseAshlandsBloodWeapons.Value
+                    ? CalculateBloodWeaponDamageMultiplier(owner)
+                    : Mathf.Max(0.1f, DamageMultiplier.Value);
+                float mult = baseMult * (1f + stars * 0.25f);
                 __instance.m_damage.Modify(mult);
             }
+        }
+
+        [HarmonyPatch(typeof(Character), "OnDeath")]
+        [HarmonyPrefix]
+        private static void Character_OnDeath_Prefix(Character __instance, ZNetView ___m_nview)
+        {
+            if (__instance == null || !UseAshlandsBloodWeapons.Value || !IsAshlandsDvergr(__instance))
+            {
+                return;
+            }
+            if (___m_nview == null || !___m_nview.IsValid() || !___m_nview.IsOwner())
+            {
+                return;
+            }
+            float dropChance = Mathf.Clamp(BloodWeaponDropChance.Value, 0f, 100f);
+            if (dropChance <= 0f || UnityEngine.Random.Range(0f, 100f) > dropChance)
+            {
+                return;
+            }
+            ZDO zdo = ___m_nview.GetZDO();
+            const string DropKey = "AshlandsDvergrMod_DroppedBloodWeapon";
+            if (zdo != null)
+            {
+                if (zdo.GetBool(DropKey))
+                {
+                    return;
+                }
+                zdo.Set(DropKey, true);
+            }
+
+            string weaponPrefabName = GetEquivalentBloodWeaponPrefabName(__instance.gameObject.name);
+            GameObject weaponPrefab = ResolvePrefabByNameOrAssetId(weaponPrefabName);
+            if (weaponPrefab == null)
+            {
+                return;
+            }
+
+            Vector3 dropPos = __instance.GetCenterPoint() + Vector3.up * 0.45f;
+            Quaternion dropRot = Quaternion.Euler(0f, UnityEngine.Random.Range(0, 360), 0f);
+            GameObject dropped = UnityEngine.Object.Instantiate(weaponPrefab, dropPos, dropRot);
+            ItemDrop itemDrop = dropped.GetComponent<ItemDrop>();
+            if (itemDrop != null && itemDrop.m_itemData != null)
+            {
+                int quality = Mathf.Clamp(__instance.GetLevel(), 1, 3);
+                itemDrop.SetQuality(quality);
+            }
+            Rigidbody rb = dropped.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                Vector3 vel = UnityEngine.Random.insideUnitSphere * 1.5f;
+                vel.y = Mathf.Abs(vel.y) + 3.0f;
+                rb.linearVelocity = vel;
+            }
+            Log.LogInfo($"Ashlands Dvergr '{__instance.gameObject.name}' (level {__instance.GetLevel()}) dropped {weaponPrefabName}.");
         }
 
         [HarmonyPatch(typeof(VisEquipment), "UpdateEquipmentVisuals")]
@@ -1003,23 +1285,21 @@ namespace AshlandsDvergrMod
                                 {
                                     debugCube.gameObject.SetActive(false);
                                 }
-                                if (i == 0)
-                                {
-                                    foreach (Renderer wr in weaponInst.GetComponentsInChildren<Renderer>(includeInactive: true))
-                                    {
-                                        foreach (Material m in wr.sharedMaterials)
-                                        {
-                                            if (m == null) continue;
-                                            Log.LogInfo($"[Attached {itemPrefab.name} Weapon] {wr.name} (active={wr.gameObject.activeSelf}, scale={weaponInst.transform.localScale}, {wr.GetType().Name}) | Mat={m.name} | Shader={m.shader?.name} | HasEmissiveMap={m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap") != null}");
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
 
                     Light aura = null;
                     AshlandsDvergrEnhancer.ApplyStyleToHierarchy(model.transform, level, ref aura, out _);
+                }
+
+                // Step root ParticleSystems forward so 2-star boss particle effects are visible in the still capture
+                foreach (ParticleSystem ps in stageRoot.GetComponentsInChildren<ParticleSystem>(includeInactive: false))
+                {
+                    if (ps.transform.parent == null || ps.transform.parent.GetComponentInParent<ParticleSystem>() == null)
+                    {
+                        ps.Simulate(0.85f, withChildren: true, restart: true);
+                    }
                 }
 
                 // Studio lighting for validation render
@@ -1218,12 +1498,282 @@ namespace AshlandsDvergrMod
                     tName.IndexOf("BackBow", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     tName.IndexOf("BackMelee", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     tName.IndexOf("BackTool", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    tName.IndexOf("attach_Dverger", StringComparison.OrdinalIgnoreCase) >= 0)
+                    tName.IndexOf("attach_Dverger", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    tName.IndexOf("AshlandsDvergr_BloodWeapon", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     return true;
                 }
             }
             return false;
+        }
+
+        private static Transform FindBone(Transform root, params string[] names)
+        {
+            foreach (Transform t in root.GetComponentsInChildren<Transform>(includeInactive: true))
+            {
+                foreach (string n in names)
+                {
+                    if (string.Equals(t.name, n, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return t;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private static void EnsureBloodWeaponVisual(Transform root, VisEquipment visEq)
+        {
+            bool useBloodWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value;
+            Transform rightHand = visEq != null && visEq.m_rightHand != null
+                ? visEq.m_rightHand
+                : FindBone(root, "r.hand", "RightHand_Attach", "RightHand");
+            if (rightHand == null)
+            {
+                return;
+            }
+
+            Transform existingBloodWep = rightHand.Find("AshlandsDvergr_BloodWeapon");
+            if (!useBloodWep)
+            {
+                if (existingBloodWep != null)
+                {
+                    existingBloodWep.gameObject.SetActive(false);
+                }
+                for (int i = 0; i < rightHand.childCount; i++)
+                {
+                    Transform child = rightHand.GetChild(i);
+                    if (child != existingBloodWep && child.name.IndexOf("AshlandsDvergr_", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        foreach (Renderer r in child.GetComponentsInChildren<Renderer>(includeInactive: true))
+                        {
+                            if (r.name != "Cube")
+                            {
+                                r.enabled = true;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Hide vanilla held weapon meshes (e.g., DvergerArbalest) while keeping any other attachments intact
+            for (int i = 0; i < rightHand.childCount; i++)
+            {
+                Transform child = rightHand.GetChild(i);
+                if (child == existingBloodWep || child.name.IndexOf("AshlandsDvergr_", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    continue;
+                }
+                foreach (Renderer r in child.GetComponentsInChildren<Renderer>(includeInactive: true))
+                {
+                    r.enabled = false;
+                }
+            }
+
+            if (existingBloodWep != null)
+            {
+                existingBloodWep.gameObject.SetActive(true);
+                return;
+            }
+
+            Character ch = root.GetComponentInParent<Character>() ?? root.GetComponentInChildren<Character>();
+            string charName = ch != null ? ch.gameObject.name : root.name;
+            string wepPrefabName = AshlandsDvergrPlugin.GetEquivalentBloodWeaponPrefabName(charName);
+            GameObject wepPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(wepPrefabName);
+            if (wepPrefab == null)
+            {
+                return;
+            }
+
+            Transform attach = wepPrefab.transform.Find("attach") ?? wepPrefab.transform.Find("attach_r.hand");
+            if (attach == null)
+            {
+                return;
+            }
+
+            GameObject wepInst = UnityEngine.Object.Instantiate(attach.gameObject);
+            wepInst.name = "AshlandsDvergr_BloodWeapon";
+            wepInst.transform.SetParent(rightHand, worldPositionStays: true);
+            wepInst.transform.localPosition = Vector3.zero;
+            wepInst.transform.localRotation = Quaternion.identity;
+            wepInst.SetActive(true);
+            Transform debugCube = wepInst.transform.Find("Cube");
+            if (debugCube != null)
+            {
+                debugCube.gameObject.SetActive(false);
+            }
+        }
+
+        private static void Ensure2StarBossEffects(Transform root, int level, bool coolEnabled, float lightMult)
+        {
+            bool shouldShowBossFx = coolEnabled && level >= 3 && AshlandsDvergrPlugin.Enable2StarBossEffects.Value;
+
+            Transform existingBossRoot = root.Find("AshlandsDvergr_BossFX");
+            Transform leftHand = FindBone(root, "l.hand", "LeftHand_Attach", "LeftHand");
+            Transform rightHand = FindBone(root, "r.hand", "RightHand_Attach", "RightHand");
+            Transform chestBone = FindBone(root, "spine2", "spine1", "chest", "Spine");
+
+            Transform existingLeftHandFx = leftHand != null ? leftHand.Find("AshlandsDvergr_BossHandFX") : null;
+            Transform existingRightHandFx = rightHand != null ? rightHand.Find("AshlandsDvergr_BossHandFX") : null;
+            Transform existingChestFx = chestBone != null ? chestBone.Find("AshlandsDvergr_BossChestFX") : null;
+
+            if (!shouldShowBossFx)
+            {
+                if (existingBossRoot != null) existingBossRoot.gameObject.SetActive(false);
+                if (existingLeftHandFx != null) existingLeftHandFx.gameObject.SetActive(false);
+                if (existingRightHandFx != null) existingRightHandFx.gameObject.SetActive(false);
+                if (existingChestFx != null) existingChestFx.gameObject.SetActive(false);
+                return;
+            }
+
+            if (existingBossRoot != null)
+            {
+                existingBossRoot.gameObject.SetActive(true);
+                if (existingLeftHandFx != null) existingLeftHandFx.gameObject.SetActive(true);
+                if (existingRightHandFx != null) existingRightHandFx.gameObject.SetActive(true);
+                if (existingChestFx != null) existingChestFx.gameObject.SetActive(true);
+                return;
+            }
+
+            GameObject bossRoot = new GameObject("AshlandsDvergr_BossFX");
+            bossRoot.transform.SetParent(root, worldPositionStays: false);
+            bossRoot.transform.localPosition = Vector3.zero;
+            bossRoot.transform.localRotation = Quaternion.identity;
+
+            // 1. Dvergr Arcane Boss Ring & Sparks (fx_DvergerMage_Nova_ring)
+            GameObject novaRingPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId("fx_DvergerMage_Nova_ring");
+            if (novaRingPrefab != null)
+            {
+                GameObject ringInst = UnityEngine.Object.Instantiate(novaRingPrefab, bossRoot.transform);
+                ringInst.name = "BossArcaneRing";
+                ringInst.transform.localPosition = new Vector3(0f, 0.85f, 0f);
+                ringInst.transform.localRotation = Quaternion.identity;
+                ringInst.transform.localScale = Vector3.one * 0.25f;
+                ConfigureBossParticlePrefab(ringInst, new Color(0.85f, 0.22f, 1.0f, 0.55f), sizeMult: 0.35f, disableBrightFlareChildren: true);
+            }
+
+            // 2. Boss Chest Blood-Arcane Fire (vfx_crossbow_blood_fire)
+            GameObject bloodFirePrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId("vfx_crossbow_blood_fire");
+            if (bloodFirePrefab != null && chestBone != null)
+            {
+                GameObject chestInst = UnityEngine.Object.Instantiate(bloodFirePrefab);
+                chestInst.name = "AshlandsDvergr_BossChestFX";
+                chestInst.transform.SetParent(chestBone, worldPositionStays: true);
+                chestInst.transform.localPosition = Vector3.zero;
+                chestInst.transform.localRotation = Quaternion.identity;
+                chestInst.transform.localScale = Vector3.one * 0.0052f;
+                ConfigureBossParticlePrefab(chestInst, new Color(0.95f, 0.18f, 0.72f, 0.85f), sizeMult: 0.55f, disableBrightFlareChildren: true);
+            }
+
+            // 3. Boss Hand Blood-Arcane Fire on Left & Right Hands (vfx_crossbow_blood_fire)
+            if (bloodFirePrefab != null)
+            {
+                if (leftHand != null)
+                {
+                    GameObject lhInst = UnityEngine.Object.Instantiate(bloodFirePrefab);
+                    lhInst.name = "AshlandsDvergr_BossHandFX";
+                    lhInst.transform.SetParent(leftHand, worldPositionStays: true);
+                    lhInst.transform.localPosition = Vector3.zero;
+                    lhInst.transform.localRotation = Quaternion.identity;
+                    lhInst.transform.localScale = Vector3.one * 0.0042f;
+                    ConfigureBossParticlePrefab(lhInst, new Color(0.85f, 0.22f, 1.0f, 0.88f), sizeMult: 0.45f, disableBrightFlareChildren: true);
+                }
+                if (rightHand != null)
+                {
+                    GameObject rhInst = UnityEngine.Object.Instantiate(bloodFirePrefab);
+                    rhInst.name = "AshlandsDvergr_BossHandFX";
+                    rhInst.transform.SetParent(rightHand, worldPositionStays: true);
+                    rhInst.transform.localPosition = Vector3.zero;
+                    rhInst.transform.localRotation = Quaternion.identity;
+                    rhInst.transform.localScale = Vector3.one * 0.0042f;
+                    ConfigureBossParticlePrefab(rhInst, new Color(1.0f, 0.18f, 0.58f, 0.88f), sizeMult: 0.45f, disableBrightFlareChildren: true);
+                }
+            }
+        }
+
+        private static void ConfigureBossParticlePrefab(GameObject fxInstance, Color tintColor, float sizeMult = 0.25f, bool disableBrightFlareChildren = true)
+        {
+            if (fxInstance == null)
+            {
+                return;
+            }
+            fxInstance.SetActive(true);
+            foreach (TimedDestruction td in fxInstance.GetComponentsInChildren<TimedDestruction>(includeInactive: true))
+            {
+                td.enabled = false;
+            }
+            foreach (ZNetView znv in fxInstance.GetComponentsInChildren<ZNetView>(includeInactive: true))
+            {
+                znv.enabled = false;
+            }
+            foreach (AudioSource audio in fxInstance.GetComponentsInChildren<AudioSource>(includeInactive: true))
+            {
+                audio.enabled = false;
+            }
+            foreach (ZSFX zsfx in fxInstance.GetComponentsInChildren<ZSFX>(includeInactive: true))
+            {
+                zsfx.enabled = false;
+            }
+            foreach (Light l in fxInstance.GetComponentsInChildren<Light>(includeInactive: true))
+            {
+                l.enabled = false;
+            }
+            foreach (Renderer r in fxInstance.GetComponentsInChildren<Renderer>(includeInactive: true))
+            {
+                if (!(r is ParticleSystemRenderer))
+                {
+                    r.enabled = false;
+                }
+            }
+            foreach (ParticleSystem ps in fxInstance.GetComponentsInChildren<ParticleSystem>(includeInactive: true))
+            {
+                string psName = ps.gameObject.name ?? string.Empty;
+                ParticleSystemRenderer psr = ps.GetComponent<ParticleSystemRenderer>();
+                string matName = psr != null && psr.sharedMaterial != null ? psr.sharedMaterial.name : string.Empty;
+                var main = ps.main;
+                var shape = ps.shape;
+                // Disable only the stationary point/flare center orb while keeping moving flames, sparks, and wisps
+                bool isStationaryCenterOrb = !shape.enabled && main.startSpeed.constantMax <= 0.05f && main.startSize.constantMax >= 0.4f;
+                if (disableBrightFlareChildren &&
+                    (psName.IndexOf("flare", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("flash", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("glow", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("light", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("shockwave", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("refract", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("sphere", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("core", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     psName.IndexOf("orb", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     matName.IndexOf("flare", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     (psr != null && psr.renderMode == ParticleSystemRenderMode.Mesh) ||
+                     isStationaryCenterOrb))
+                {
+                    ps.gameObject.SetActive(false);
+                    continue;
+                }
+
+                main.loop = true;
+                main.playOnAwake = true;
+                main.scalingMode = ParticleSystemScalingMode.Hierarchy;
+                main.startSizeMultiplier *= sizeMult;
+                main.startSpeedMultiplier *= sizeMult;
+                main.maxParticles = Mathf.Min(main.maxParticles, 28);
+                main.startColor = new ParticleSystem.MinMaxGradient(
+                    tintColor,
+                    new Color(1.0f, 0.22f, 0.42f, tintColor.a * 0.85f));
+
+                var emission = ps.emission;
+                emission.rateOverTimeMultiplier *= 0.70f;
+                for (int b = 0; b < emission.burstCount; b++)
+                {
+                    ParticleSystem.Burst burst = emission.GetBurst(b);
+                    burst.count = new ParticleSystem.MinMaxCurve(Mathf.Min(6f, Mathf.Max(2f, burst.count.constant * 0.35f)));
+                    emission.SetBurst(b, burst);
+                }
+
+                ps.Play(withChildren: false);
+            }
         }
 
         internal static int ApplyStyleToHierarchy(Transform root, int level, ref Light auraLight, out float baseLightIntensity)
@@ -1233,6 +1783,9 @@ namespace AshlandsDvergrMod
             float lightMult = Mathf.Max(0f, AshlandsDvergrPlugin.AuraLightIntensity.Value);
 
             VisEquipment visEq = root.GetComponentInParent<VisEquipment>() ?? root.GetComponentInChildren<VisEquipment>();
+            EnsureBloodWeaponVisual(root, visEq);
+            Ensure2StarBossEffects(root, level, coolEnabled, lightMult);
+
             Renderer[] renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
 
             // Armor/cloak/hat diffuse tint (pure RGB multiplication with _Hue/_Sat/_Val = 0 avoids Custom/Creature HSV wraparound artifacts
@@ -1350,6 +1903,28 @@ namespace AshlandsDvergrMod
                         {
                             // Unmasked cloth/armor material: keep emission black so textures never wash out
                             m.SetColor("_EmissionColor", Color.black);
+                        }
+                    }
+
+                    // Enable Custom/Creature boss ember/rune vein glow (_NoiseGlowEnabled) on 2-star armor when Enable2StarBossEffects is active
+                    if (m.HasProperty("_NoiseGlowEnabled"))
+                    {
+                        bool enableBossNoiseGlow = coolEnabled && level >= 3 && AshlandsDvergrPlugin.Enable2StarBossEffects.Value && !isBodyMat && !isWeaponMat;
+                        m.SetFloat("_NoiseGlowEnabled", enableBossNoiseGlow ? 1f : 0f);
+                        if (enableBossNoiseGlow)
+                        {
+                            if (m.HasProperty("_NoiseGlowColor"))
+                            {
+                                m.SetColor("_NoiseGlowColor", new Color(1.40f, 0.22f, 1.85f, 1f));
+                            }
+                            if (m.HasProperty("_NoiseGlowSize"))
+                            {
+                                m.SetFloat("_NoiseGlowSize", 4.5f);
+                            }
+                            if (m.HasProperty("_NoiseGlowEdge"))
+                            {
+                                m.SetFloat("_NoiseGlowEdge", 0.35f);
+                            }
                         }
                     }
                 }

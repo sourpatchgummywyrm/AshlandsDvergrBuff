@@ -4,22 +4,32 @@ A Valheim BepInEx mod to make it so Ashlands Dvergrs have that iron in them.
 
 ## Features
 
-- **Spawn Rate & Density (3x by default)**:
+- **Spawn Rate, Density & Variety (3x by default + Mage/Rogue Variety)**:
   - Triples group spawn caps, spawn chance, and spawner weights for all Ashlands Dvergr spawners (`Spawner_DvergerAshlands`) and ruins.
   - Divides respawn delays by 3 and enables respawning on ruin spawners (every ~6.7 minutes).
   - Adds **ambient Dvergr patrol spawns** throughout the Ashlands biome (customizable group size, interval, and cap), outside lava zones.
+  - **Variety Dvergr Spawns (`VarietyDvergrSpawnChance = 20%`)**: Configurable chance for Ashlands Dvergr spawns to include Fire Mages (`DvergerMageFire`), Ice Mages (`DvergerMageIce`), Support Mages (`DvergerMageSupport`), and classic `Dverger` variants scaled to Ashlands health standards.
 - **Stars & Levels (Up to 2-Star / Level 3)**:
   - Enables 1-star and 2-star Dvergrs in the Ashlands with a configurable 50% level-up chance per roll.
   - Dynamically injects `LevelEffects` scale and tint setups so 1-star and 2-star Dvergrs visibly scale up (1.1x / 1.2x) alongside their HUD stars.
 - **Health (1.35x base, +40% per star)**:
   - Increases the base health of `DvergerAshlands` from 600 to 810 HP by default (configurable `0.5` to `3.0`).
   - Scales max and current health smoothly with star rank (`+40%` per star: Level 1: 810 HP, Level 2: 1134 HP, Level 3: 1458 HP).
-- **Damage (1.25x base, +25% per star)**:
-  - Boosts outgoing damage by +25% across melee strikes, Arbalest bolts, and mage spells/AOEs, with gentler +25% per-star scaling (`1.25x` at 0-star, `1.56x` at 1-star, `1.88x` at 2-star; configurable `0.5` to `3.0`).
+- **Ashlands Blood Weapons & Death Drop (`UseAshlandsBloodWeapons = true`)**:
+  - Instead of flat damage scaling via `DamageMultiplier`, equips Ashlands Dvergrs with their equivalent **Ashlands Blood Weapon**:
+    - **Crossbow wielders** (`DvergerAshlands`, `Dverger`): **Wound Ripper** (`CrossbowRipperBlood`)
+    - **Fire Mages** (`DvergerMageFire`): **Staff of Fracturing** (`StaffClusterbomb`)
+    - **Ice Mages** (`DvergerMageIce`): **Dundr** (`StaffLightning`)
+    - **Support Mages** (`DvergerMageSupport`): **Trollstav** (`StaffRedTroll`)
+  - Applies Ashlands Blood Weapon base damage (`1.35x`) plus the **Bloodstone missing-HP bonus** (`+0.5%` damage per `1%` missing HP, up to `+50%` at low health) and `+25%` per star.
+  - **Drops on Death**: Ashlands Dvergrs drop their equipped Ashlands Blood Weapon on death (`BloodWeaponDropChance = 100%` by default, quality matching their star level 1–3).
+  - If `UseAshlandsBloodWeapons = false`, falls back to `DamageMultiplier` (`1.25x` base, `+25%` per star).
 - **Slow Passive Healing**:
   - Ashlands Dvergrs slowly regenerate health out of or between skirmishes (default `1.0%` max HP every `5` seconds).
-- **Flameforged Visuals**:
-  - Star-ranked Ashlands Dvergrs scale up (`1.12x` / `1.25x`), gain crimson-bronze / obsidian-gold armor tinting, glowing molten runes/trim, and a flickering volcanic forge-ember aura light.
+- **Star-Tiered & 2-Star Boss Visuals (`Enable2StarBossEffects = true`)**:
+  - **0-Star**: Original weathered tunic, cyan eyes, and equipped Blood Weapon.
+  - **1-Star**: `1.1x` scale, burnished bronze/copper tunic, and golden-amber eyes.
+  - **2-Star Boss Effects**: `1.2x` scale, volcanic crimson tunic with glowing boss veins (`_NoiseGlowEnabled`), vivid royal purple eyes, purple-arcane weapon glow, and **2-star Boss VFX** (crimson-violet blood-fire particles on hands & chest plus an arcane boss ring aura).
 - **Fully Configurable (GUI & Text File)**:
   - All multipliers, spawn parameters, and star chances can be edited in real time via **BepInEx Configuration Manager** (press `F1` in-game) OR directly by editing the text configuration file.
   - Editing and saving the `.cfg` text file in Notepad / any text editor reloads settings live without needing to restart the game.

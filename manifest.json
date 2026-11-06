@@ -1,8 +1,8 @@
 {
   "name": "AshlandsDvergrBuff",
-  "version_number": "1.0.7",
+  "version_number": "1.0.8",
   "website_url": "https://github.com/sourpatchgummywyrm/AshlandsDvergrBuff",
-  "description": "Increases Dvergr spawn rate, health, stars (up to 2-star), and damage in the Ashlands. Adds ambient biome spawns and boosts ruin/camp spawners.",
+  "description": "Increases Dvergr spawn rate, variety (Mages & classic Dvergrs), health, stars (with 2-star boss FX), and equips/drops Ashlands Blood Weapons in the Ashlands.",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2202"
   ]
