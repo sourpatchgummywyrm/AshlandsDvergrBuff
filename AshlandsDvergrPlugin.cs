@@ -24,6 +24,9 @@ namespace AshlandsDvergrMod
         internal static ConfigEntry<float> SpawnRateMultiplier;
         internal static ConfigEntry<float> CampRespawnIntervalMinutes;
         internal static ConfigEntry<float> VarietyDvergrSpawnChance;
+        internal static ConfigEntry<bool> EnableFireMageSpawns;
+        internal static ConfigEntry<bool> EnableIceMageSpawns;
+        internal static ConfigEntry<bool> EnableSupportMageSpawns;
 
         internal static ConfigEntry<bool> EnableAmbientAshlandsSpawns;
         internal static ConfigEntry<int> AmbientMaxSpawned;
@@ -63,9 +66,18 @@ namespace AshlandsDvergrMod
         private static readonly HashSet<int> PatchedSpawnAreas = new HashSet<int>();
         private static readonly Dictionary<int, float> OriginalPrefabHealth = new Dictionary<int, float>();
         private static readonly Dictionary<string, GameObject> CachedSoftRefPrefabs = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+        private static readonly System.Random VarietyRng = new System.Random();
+
+        private static readonly List<string> VarietyDeck = new List<string>(10);
+        private static int VarietyDeckIndex;
+        private static float LastDeckVarietyChance = -1f;
 
         internal static bool InsideSpawnerSpawn;
+        internal static bool InsideConsoleSpawn;
+        internal static bool InsideConsoleVarietySplit;
+        internal static int ConsoleExplicitLevel;
         internal static int PendingVarietySpawnLevel;
+        internal static bool VarietyReplacedInCurrentSpawn;
 
         private static FileSystemWatcher _configFileWatcher;
         private static DateTime _lastConfigReloadTime = DateTime.MinValue;
@@ -93,12 +105,33 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0.5f, 60.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            VarietyDvergrSpawnChance = Config.Bind("1. Spawning", "VarietyDvergrSpawnChance", 30f,
+            VarietyDvergrSpawnChance = Config.Bind("1. Spawning", "VarietyDvergrSpawnChance", 50f,
                 new ConfigDescription(
                     "Percentage chance (0-100) for Ashlands Dvergr spawns to be a variety type (Fire Mage, Ice Mage, or Support Mage) instead of standard DvergerAshlands.\n" +
-                    "Default: 30% (giving a 70% / 10% / 10% / 10% split among Crossbow / Fire / Ice / Support).\n" +
+                    "Default: 50% (giving a 50% Crossbow / 50% Mages split: ~16.7% Fire / 16.7% Ice / 16.7% Support).\n" +
                     "Range: 0.0 to 100.0",
                     new AcceptableValueRange<float>(0.0f, 100.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            EnableFireMageSpawns = Config.Bind("1. Spawning", "EnableFireMageSpawns", true,
+                new ConfigDescription(
+                    "Allow Fire Mages (DvergerMageFire with Staff of Fracturing) to appear in Ashlands spawns.\n" +
+                    "Default: true",
+                    null,
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            EnableIceMageSpawns = Config.Bind("1. Spawning", "EnableIceMageSpawns", true,
+                new ConfigDescription(
+                    "Allow Ice Mages (DvergerMageIce with Dundr) to appear in Ashlands spawns.\n" +
+                    "Default: true",
+                    null,
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            EnableSupportMageSpawns = Config.Bind("1. Spawning", "EnableSupportMageSpawns", false,
+                new ConfigDescription(
+                    "Allow Support Mages (DvergerMageSupport with default Dvergr Staff of Healing, Heal, & Buff) to appear in Ashlands spawns.\n" +
+                    "Default: false",
+                    null,
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 2. Ambient Spawning
@@ -381,8 +414,10 @@ namespace AshlandsDvergrMod
                     Character c = go.GetComponent<Character>();
                     if (c != null && OriginalPrefabHealth.TryGetValue(go.GetInstanceID(), out float baseHp))
                     {
+                        bool isMage = IsDvergrMage(c);
+                        float ashlandsStandardHp = isMage ? Mathf.Max(baseHp, 650f) : baseHp;
                         float hpMult = GetHealthMultiplierFor(c);
-                        c.m_health = baseHp * hpMult;
+                        c.m_health = ashlandsStandardHp * hpMult;
                         EnsureVisualStarSetups(c);
                         Log.LogInfo($"Refreshed {pName} prefab base health to {c.m_health} (mult={hpMult}).");
                     }
@@ -442,6 +477,7 @@ namespace AshlandsDvergrMod
             }
             if (ch.gameObject.name.IndexOf("Ashlands", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 InsideSpawnerSpawn ||
+                InsideConsoleSpawn ||
                 PendingVarietySpawnLevel > 0 ||
                 Console.IsVisible())
             {
@@ -477,6 +513,17 @@ namespace AshlandsDvergrMod
             return name.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        internal static bool IsDvergrSupportMageName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+            return name.IndexOf("MageSupport", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   name.IndexOf("Support", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   name.IndexOf("Heal", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         internal static float GetHealthMultiplierFor(Character ch)
         {
             return IsDvergrMage(ch) ? Mathf.Max(0.1f, MageHealthMultiplier.Value) : Mathf.Max(0.1f, HealthMultiplier.Value);
@@ -487,13 +534,121 @@ namespace AshlandsDvergrMod
             return IsDvergrMage(ch) ? Mathf.Max(0.1f, MageDamageMultiplier.Value) : Mathf.Max(0.1f, DamageMultiplier.Value);
         }
 
+        internal static float NextVarietyRollPercent()
+        {
+            return (float)(VarietyRng.NextDouble() * 100.0);
+        }
+
+        internal static List<string> GetEnabledVarietyMagePrefabNames()
+        {
+            List<string> list = new List<string>(3);
+            if (EnableFireMageSpawns == null || EnableFireMageSpawns.Value)
+            {
+                list.Add("DvergerMageFire");
+            }
+            if (EnableIceMageSpawns == null || EnableIceMageSpawns.Value)
+            {
+                list.Add("DvergerMageIce");
+            }
+            if (EnableSupportMageSpawns == null || EnableSupportMageSpawns.Value)
+            {
+                list.Add("DvergerMageSupport");
+            }
+            return list;
+        }
+
+        internal static string PickRandomVarietyMagePrefabName()
+        {
+            List<string> enabled = GetEnabledVarietyMagePrefabNames();
+            if (enabled.Count == 0)
+            {
+                return "DvergerAshlands";
+            }
+            return enabled[VarietyRng.Next(enabled.Count)];
+        }
+
+        private static void RefillAndShuffleVarietyDeck(float varietyChance)
+        {
+            VarietyDeck.Clear();
+            VarietyDeckIndex = 0;
+            LastDeckVarietyChance = varietyChance;
+
+            List<string> enabledMages = GetEnabledVarietyMagePrefabNames();
+            int mageSlots = enabledMages.Count == 0 ? 0 : Mathf.Clamp(Mathf.RoundToInt(varietyChance / 10f), 0, 10);
+            int rangerSlots = 10 - mageSlots;
+
+            if (enabledMages.Count > 0)
+            {
+                int startMageIdx = VarietyRng.Next(enabledMages.Count);
+                for (int i = 0; i < mageSlots; i++)
+                {
+                    VarietyDeck.Add(enabledMages[(startMageIdx + i) % enabledMages.Count]);
+                }
+            }
+            for (int i = 0; i < rangerSlots; i++)
+            {
+                VarietyDeck.Add("DvergerAshlands");
+            }
+
+            // Fisher-Yates shuffle
+            for (int i = VarietyDeck.Count - 1; i > 0; i--)
+            {
+                int j = VarietyRng.Next(i + 1);
+                string tmp = VarietyDeck[i];
+                VarietyDeck[i] = VarietyDeck[j];
+                VarietyDeck[j] = tmp;
+            }
+
+            // Ensure at least 1 mage appears within the first 3 draws so testing a few spawns in console immediately shows mages
+            if (mageSlots > 0 && VarietyDeck.Count >= 3)
+            {
+                bool hasEarlyMage = false;
+                for (int i = 0; i < 3; i++)
+                {
+                    if (!string.Equals(VarietyDeck[i], "DvergerAshlands", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasEarlyMage = true;
+                        break;
+                    }
+                }
+                if (!hasEarlyMage)
+                {
+                    for (int i = 3; i < VarietyDeck.Count; i++)
+                    {
+                        if (!string.Equals(VarietyDeck[i], "DvergerAshlands", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int earlySlot = VarietyRng.Next(3);
+                            string tmp = VarietyDeck[earlySlot];
+                            VarietyDeck[earlySlot] = VarietyDeck[i];
+                            VarietyDeck[i] = tmp;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        internal static string RollVarietyPrefabForSpawn()
+        {
+            float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
+            if (varietyChance <= 0f)
+            {
+                return "DvergerAshlands";
+            }
+            if (VarietyDeck.Count == 0 || VarietyDeckIndex >= VarietyDeck.Count || Mathf.Abs(varietyChance - LastDeckVarietyChance) > 0.5f)
+            {
+                RefillAndShuffleVarietyDeck(varietyChance);
+            }
+            return VarietyDeck[VarietyDeckIndex++];
+        }
+
         internal static int RollConfiguredLevel()
         {
             int min = Mathf.Max(1, MinLevel.Value);
             int max = Mathf.Max(min, MaxLevel.Value);
             float chance = Mathf.Clamp(LevelUpChance.Value, 0f, 100f);
             int level = min;
-            while (level < max && UnityEngine.Random.Range(0f, 100f) <= chance)
+            while (level < max && NextVarietyRollPercent() <= chance)
             {
                 level++;
             }
@@ -577,10 +732,13 @@ namespace AshlandsDvergrMod
             {
                 return "StaffLightning";
             }
-            if (characterName.IndexOf("MageSupport", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                characterName.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (IsDvergrSupportMageName(characterName))
             {
-                return "StaffIceShards";
+                return "DvergerStaffHeal";
+            }
+            if (characterName.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "StaffClusterbomb";
             }
             if (string.Equals(characterName, "Dverger", StringComparison.OrdinalIgnoreCase) ||
                 (characterName.IndexOf("Dverger", StringComparison.OrdinalIgnoreCase) >= 0 &&
@@ -598,20 +756,20 @@ namespace AshlandsDvergrMod
             {
                 return null;
             }
-            if (ObjectDB.instance != null)
-            {
-                GameObject item = ObjectDB.instance.GetItemPrefab(prefabName);
-                if (item != null)
-                {
-                    return item;
-                }
-            }
             if (ZNetScene.instance != null)
             {
                 GameObject prefab = ZNetScene.instance.GetPrefab(prefabName);
                 if (prefab != null)
                 {
                     return prefab;
+                }
+            }
+            if (ObjectDB.instance != null)
+            {
+                GameObject item = ObjectDB.instance.GetItemPrefab(prefabName);
+                if (item != null)
+                {
+                    return item;
                 }
             }
             if (CachedSoftRefPrefabs.TryGetValue(prefabName, out GameObject cached) && cached != null)
@@ -623,6 +781,7 @@ namespace AshlandsDvergrMod
                 assetIdHex = prefabName switch
                 {
                     "DvergerAshlands" => "2ece1cf15f2885a4da6da84af9d5c542",
+                    "DvergerMage" => "8c3b1095f7874dc469e0e324a6fb82d7",
                     "DvergerMageFire" => "1ed38d388ceda5f4e89f5be4d1768fab",
                     "DvergerMageIce" => "8ad104a536dd94d4bb764f8a9f3d8ee7",
                     "DvergerMageSupport" => "c0e85e3d180619047bdf97cd98271a4d",
@@ -632,6 +791,7 @@ namespace AshlandsDvergrMod
                     "StaffLightning" => "90f15fa074aa08a478750566117d84d0",
                     "StaffRedTroll" => "87eebe8749379744eacfa37ea818aeab",
                     "StaffIceShards" => "d268d47613aec2963b1878ed2a224e1e",
+                    "StaffShield" => "2ac6892f975d1667f96a24586cd6b976",
                     "BattleaxeSkullSplittur" => "131b6e64eaee51547a0b76f472190581",
                     "fx_fader_chestfire" => "affcfc1b631dafe4ba5eb9388ec6196a",
                     "fx_goblinking_nova_hand" => "ebf058290cad64993843155e16b4b6f6",
@@ -683,8 +843,10 @@ namespace AshlandsDvergrMod
                             baseHp = ch.m_health;
                             OriginalPrefabHealth[id] = baseHp;
                         }
+                        bool isMage = IsDvergrMage(ch);
+                        float ashlandsStandardHp = isMage ? Mathf.Max(baseHp, 650f) : baseHp;
                         float hpMult = GetHealthMultiplierFor(ch);
-                        ch.m_health = baseHp * hpMult;
+                        ch.m_health = ashlandsStandardHp * hpMult;
                         EnsureVisualStarSetups(ch);
                         Log.LogInfo($"Configured {pName} prefab base health: {baseHp} -> {ch.m_health} (mult={hpMult})");
                     }
@@ -699,18 +861,13 @@ namespace AshlandsDvergrMod
                 return;
             }
             EnsureVisualStarSetups(ch);
-            if (ch.gameObject.name.IndexOf("Ashlands", StringComparison.OrdinalIgnoreCase) < 0)
+            bool isMage = IsDvergrMage(ch);
+            float baseStandard = isMage ? 650f : 1000f;
+            float hpMult = GetHealthMultiplierFor(ch);
+            float targetHp = baseStandard * hpMult;
+            if (ch.m_health < targetHp)
             {
-                // Elevate variety Mistlands Dvergrs (Mages, classic Dverger) spawned as Ashlands Dvergrs to Ashlands base HP standard before multiplier
-                // Mages get base 450 (higher than vanilla 200, but lower than Ashlands ranger 600 base); warriors/rogues get 600 base
-                bool isMage = IsDvergrMage(ch);
-                float baseStandard = isMage ? 450f : 600f;
-                float hpMult = GetHealthMultiplierFor(ch);
-                float targetHp = baseStandard * hpMult;
-                if (ch.m_health < targetHp)
-                {
-                    ch.m_health = targetHp;
-                }
+                ch.m_health = targetHp;
             }
         }
 
@@ -727,7 +884,11 @@ namespace AshlandsDvergrMod
             if (enhancer == null)
             {
                 enhancer = ch.gameObject.AddComponent<AshlandsDvergrEnhancer>();
-                enhancer.WasSpawnedBySpawner = InsideSpawnerSpawn;
+                enhancer.WasSpawnedBySpawner = VarietyReplacedInCurrentSpawn || PendingVarietySpawnLevel > 0;
+            }
+            else if (VarietyReplacedInCurrentSpawn || PendingVarietySpawnLevel > 0)
+            {
+                enhancer.WasSpawnedBySpawner = true;
             }
 
             if (nview == null)
@@ -744,11 +905,17 @@ namespace AshlandsDvergrMod
                 return;
             }
             zdo.Set("AshlandsDvergrMod_IsAshlands", true);
+            if (VarietyReplacedInCurrentSpawn || PendingVarietySpawnLevel > 0)
+            {
+                zdo.Set("AshlandsDvergrMod_VarietyChecked", true);
+            }
             const string RollKey = "AshlandsDvergrMod_Initialized";
             if (!zdo.GetBool(RollKey))
             {
                 zdo.Set(RollKey, true);
-                int rolledLevel = PendingVarietySpawnLevel > 0 ? PendingVarietySpawnLevel : RollConfiguredLevel();
+                int rolledLevel = PendingVarietySpawnLevel > 0
+                    ? PendingVarietySpawnLevel
+                    : ((InsideConsoleSpawn && ConsoleExplicitLevel > 0) ? ConsoleExplicitLevel : RollConfiguredLevel());
                 if (rolledLevel > ch.GetLevel())
                 {
                     ch.SetLevel(rolledLevel);
@@ -756,6 +923,116 @@ namespace AshlandsDvergrMod
                 float maxHp = CalculateScaledMaxHealth(ch);
                 ch.SetMaxHealth(maxHp);
                 ch.SetHealth(maxHp);
+            }
+        }
+
+        [HarmonyPatch(typeof(Terminal), nameof(Terminal.TryRunCommand))]
+        [HarmonyPrefix]
+        private static bool Terminal_TryRunCommand_Prefix(Terminal __instance, ref string text, bool silentFail, bool skipAllowedCheck)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return true;
+            }
+
+            string trimmed = text.Trim();
+            if (!trimmed.StartsWith("spawn ", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string[] parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2)
+            {
+                return true;
+            }
+
+            string spawnName = parts[1];
+            bool isAnyDvergrSpawn = spawnName.IndexOf("Dverger", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                    spawnName.IndexOf("Dvergr", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isAnyDvergrSpawn)
+            {
+                return true;
+            }
+
+            InsideConsoleSpawn = true;
+            if (parts.Length >= 4 && int.TryParse(parts[3], out int explicitLvl) && explicitLvl > 0)
+            {
+                ConsoleExplicitLevel = explicitLvl;
+            }
+            else
+            {
+                ConsoleExplicitLevel = 0;
+            }
+
+            bool isExplicitMageRandom = string.Equals(spawnName, "DvergerMage", StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(spawnName, "DvergrMage", StringComparison.OrdinalIgnoreCase);
+            bool isVarietyTarget = isExplicitMageRandom ||
+                                   string.Equals(spawnName, "DvergerAshlands", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(spawnName, "Dverger", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(spawnName, "Dvergr", StringComparison.OrdinalIgnoreCase);
+
+            if (!isVarietyTarget || InsideConsoleVarietySplit)
+            {
+                return true;
+            }
+
+            int count = 1;
+            if (parts.Length >= 3 && int.TryParse(parts[2], out int parsedCount) && parsedCount > 1)
+            {
+                count = parsedCount;
+            }
+
+            string tailArgs = parts.Length > 3 ? " " + string.Join(" ", parts, 3, parts.Length - 3) : string.Empty;
+
+            if (count <= 1)
+            {
+                string rolledPrefab = isExplicitMageRandom ? PickRandomVarietyMagePrefabName() : RollVarietyPrefabForSpawn();
+                string countArg = parts.Length >= 3 ? " " + parts[2] : string.Empty;
+                text = $"spawn {rolledPrefab}{countArg}{tailArgs}";
+                VarietyReplacedInCurrentSpawn = true;
+                Log.LogInfo($"[Console Variety Spawn] Rolled '{rolledPrefab}' for '{trimmed}'");
+                return true;
+            }
+
+            Dictionary<string, int> rolledCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < count; i++)
+            {
+                string rolled = isExplicitMageRandom ? PickRandomVarietyMagePrefabName() : RollVarietyPrefabForSpawn();
+                rolledCounts.TryGetValue(rolled, out int cur);
+                rolledCounts[rolled] = cur + 1;
+            }
+
+            InsideConsoleVarietySplit = true;
+            VarietyReplacedInCurrentSpawn = true;
+            try
+            {
+                foreach (KeyValuePair<string, int> kv in rolledCounts)
+                {
+                    string subCmd = $"spawn {kv.Key} {kv.Value}{tailArgs}";
+                    Log.LogInfo($"[Console Variety Spawn] Executing batch split: '{subCmd}'");
+                    __instance.TryRunCommand(subCmd, silentFail, skipAllowedCheck);
+                }
+            }
+            finally
+            {
+                InsideConsoleVarietySplit = false;
+                InsideConsoleSpawn = false;
+                VarietyReplacedInCurrentSpawn = false;
+                ConsoleExplicitLevel = 0;
+            }
+            return false;
+        }
+
+        [HarmonyPatch(typeof(Terminal), nameof(Terminal.TryRunCommand))]
+        [HarmonyPostfix]
+        private static void Terminal_TryRunCommand_Postfix()
+        {
+            if (!InsideConsoleVarietySplit)
+            {
+                InsideConsoleSpawn = false;
+                VarietyReplacedInCurrentSpawn = false;
+                ConsoleExplicitLevel = 0;
             }
         }
 
@@ -775,69 +1052,6 @@ namespace AshlandsDvergrMod
         private static void Character_Awake_Postfix(Character __instance, ZNetView ___m_nview)
         {
             EnsureAshlandsDvergrInitialized(__instance, ___m_nview);
-        }
-
-        [HarmonyPatch(typeof(Humanoid), "Start")]
-        [HarmonyPostfix]
-        private static void Humanoid_Start_Postfix(Humanoid __instance, ZNetView ___m_nview)
-        {
-            if (__instance == null || !IsAshlandsDvergr(__instance))
-            {
-                return;
-            }
-            EnsureAshlandsDvergrInitialized(__instance, ___m_nview);
-
-            // Handle variety mage spawn roll when DvergerAshlands is spawned outside CreatureSpawner (e.g. console 'spawn DvergerAshlands' or ambient SpawnSystem)
-            AshlandsDvergrEnhancer enhancer = __instance.GetComponent<AshlandsDvergrEnhancer>();
-            if (__instance.gameObject.name.StartsWith("DvergerAshlands", StringComparison.OrdinalIgnoreCase) &&
-                (enhancer == null || !enhancer.WasSpawnedBySpawner) &&
-                ___m_nview != null && ___m_nview.IsValid() && ___m_nview.IsOwner())
-            {
-                ZDO zdo = ___m_nview.GetZDO();
-                if (zdo != null && !zdo.GetBool("AshlandsDvergrMod_VarietyChecked"))
-                {
-                    zdo.Set("AshlandsDvergrMod_VarietyChecked", true);
-                    float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
-                    if (varietyChance > 0f && UnityEngine.Random.Range(0f, 100f) < varietyChance)
-                    {
-                        string pickName = VarietyDvergrPrefabNames[UnityEngine.Random.Range(0, VarietyDvergrPrefabNames.Length)];
-                        GameObject altPrefab = ResolvePrefabByNameOrAssetId(pickName);
-                        if (altPrefab != null)
-                        {
-                            int targetLevel = Mathf.Max(1, __instance.GetLevel());
-                            Vector3 pos = __instance.transform.position;
-                            Quaternion rot = __instance.transform.rotation;
-
-                            PendingVarietySpawnLevel = targetLevel;
-                            GameObject newObj = UnityEngine.Object.Instantiate(altPrefab, pos, rot);
-                            PendingVarietySpawnLevel = 0;
-
-                            if (newObj != null)
-                            {
-                                ZNetView newNview = newObj.GetComponent<ZNetView>();
-                                if (newNview != null && newNview.IsValid() && newNview.GetZDO() != null)
-                                {
-                                    ZDO newZdo = newNview.GetZDO();
-                                    newZdo.Set("AshlandsDvergrMod_IsAshlands", true);
-                                    newZdo.Set("AshlandsDvergrMod_VarietyChecked", true);
-                                }
-                                Character newCh = newObj.GetComponent<Character>();
-                                if (newCh != null && newCh.GetLevel() != targetLevel)
-                                {
-                                    newCh.SetLevel(targetLevel);
-                                }
-                                ___m_nview.Destroy();
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (enhancer != null)
-            {
-                enhancer.ApplyCoolVisuals();
-            }
         }
 
         private static float CalculateScaledMaxHealth(Character ch)
@@ -960,16 +1174,20 @@ namespace AshlandsDvergrMod
                     }
                 }
 
-                float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
-                if (varietyChance > 0f && UnityEngine.Random.Range(0f, 100f) < varietyChance)
+                string pickName = RollVarietyPrefabForSpawn();
+                if (!string.Equals(pickName, __instance.m_creaturePrefab.name, StringComparison.OrdinalIgnoreCase))
                 {
-                    string pickName = VarietyDvergrPrefabNames[UnityEngine.Random.Range(0, VarietyDvergrPrefabNames.Length)];
                     GameObject altPrefab = ResolvePrefabByNameOrAssetId(pickName);
                     if (altPrefab != null)
                     {
                         __state = __instance.m_creaturePrefab;
                         __instance.m_creaturePrefab = altPrefab;
+                        VarietyReplacedInCurrentSpawn = true;
                     }
+                }
+                else
+                {
+                    VarietyReplacedInCurrentSpawn = true;
                 }
             }
         }
@@ -979,6 +1197,7 @@ namespace AshlandsDvergrMod
         private static void CreatureSpawner_Spawn_Postfix(CreatureSpawner __instance, GameObject __state)
         {
             InsideSpawnerSpawn = false;
+            VarietyReplacedInCurrentSpawn = false;
             if (__instance != null && __state != null)
             {
                 __instance.m_creaturePrefab = __state;
@@ -1046,10 +1265,11 @@ namespace AshlandsDvergrMod
                 __instance.m_maxTotal = Mathf.CeilToInt(__instance.m_maxTotal * mult);
 
                 float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
-                if (varietyChance > 0f && ZNetScene.instance != null)
+                List<string> enabledMages = GetEnabledVarietyMagePrefabNames();
+                if (varietyChance > 0f && enabledMages.Count > 0 && ZNetScene.instance != null)
                 {
-                    float perVariantWeight = Mathf.Max(0.05f, (baseWeight * (varietyChance / 100f)) / VarietyDvergrPrefabNames.Length);
-                    foreach (string varName in VarietyDvergrPrefabNames)
+                    float perVariantWeight = Mathf.Max(0.05f, (baseWeight * (varietyChance / 100f)) / enabledMages.Count);
+                    foreach (string varName in enabledMages)
                     {
                         GameObject varPrefab = ZNetScene.instance.GetPrefab(varName);
                         if (varPrefab != null)
@@ -1153,11 +1373,12 @@ namespace AshlandsDvergrMod
                     Log.LogInfo($"Added ambient DvergerAshlands SpawnData (max={ambientDvergr.m_maxSpawned}, interval={ambientDvergr.m_spawnInterval}s, chance={ambientDvergr.m_spawnChance}%, levels={ambientDvergr.m_minLevel}-{ambientDvergr.m_maxLevel}).");
 
                     float varietyChance = Mathf.Clamp(VarietyDvergrSpawnChance.Value, 0f, 100f);
-                    if (varietyChance > 0f)
+                    List<string> enabledMages = GetEnabledVarietyMagePrefabNames();
+                    if (varietyChance > 0f && enabledMages.Count > 0)
                     {
                         float varChance = Mathf.Clamp(AmbientSpawnChance.Value * (varietyChance / 100f), 1f, 100f);
                         int varMaxSpawned = Mathf.Max(1, AmbientMaxSpawned.Value / 2);
-                        foreach (string varName in VarietyDvergrPrefabNames)
+                        foreach (string varName in enabledMages)
                         {
                             GameObject varPrefab = ZNetScene.instance.GetPrefab(varName);
                             if (varPrefab == null)
@@ -1271,6 +1492,17 @@ namespace AshlandsDvergrMod
             }
         }
 
+        [HarmonyPatch(typeof(Humanoid), "GiveDefaultItems")]
+        [HarmonyPostfix]
+        private static void Humanoid_GiveDefaultItems_Postfix(Humanoid __instance)
+        {
+            if (__instance == null || !IsAshlandsDvergr(__instance))
+            {
+                return;
+            }
+            AshlandsDvergrEnhancer.ConfigureAshlandsCombatInventory(__instance);
+        }
+
         private static IEnumerator RenderDvergrValidationCoroutine()
         {
             yield return new WaitForSeconds(1.0f);
@@ -1374,6 +1606,87 @@ namespace AshlandsDvergrMod
                 if (visualTemplate == null)
                 {
                     visualTemplate = prefab.transform;
+                }
+
+                // Comprehensive runtime tests for Console Variety Spawning, Mistlands Mage Scaling, and Ashlands Weapon Attacks
+                List<string> first5 = new List<string>();
+                for (int r = 0; r < 5; r++)
+                {
+                    string cmd = "spawn DvergerAshlands";
+                    Terminal_TryRunCommand_Prefix(null, ref cmd, true, true);
+                    Terminal_TryRunCommand_Postfix();
+                    first5.Add(cmd);
+                }
+
+                string mageCmd = "spawn DvergerMage 1 3";
+                Terminal_TryRunCommand_Prefix(null, ref mageCmd, true, true);
+                Terminal_TryRunCommand_Postfix();
+
+                Dictionary<string, int> dist100 = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                for (int r = 0; r < 100; r++)
+                {
+                    string rolled = RollVarietyPrefabForSpawn();
+                    dist100.TryGetValue(rolled, out int c);
+                    dist100[rolled] = c + 1;
+                }
+                List<string> distSummary = new List<string>();
+                foreach (var kv in dist100) distSummary.Add($"{kv.Key}={kv.Value}%");
+                Log.LogInfo($"[RuntimeTest] First 5 console spawns: [{string.Join(" | ", first5)}], 'spawn DvergerMage 1 3' -> '{mageCmd}', 100-roll split: [{string.Join(", ", distSummary)}]");
+
+                string[] testCreatures = { "DvergerAshlands", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport" };
+                foreach (string tcName in testCreatures)
+                {
+                    GameObject tcPrefab = ResolvePrefabByNameOrAssetId(tcName);
+                    if (tcPrefab == null) continue;
+                    bool prevDisable = ZNetView.m_forceDisableInit;
+                    ZNetView.m_forceDisableInit = true;
+                    GameObject tcInst = null;
+                    try
+                    {
+                        InsideConsoleSpawn = true;
+                        ConsoleExplicitLevel = 3;
+                        tcInst = UnityEngine.Object.Instantiate(tcPrefab, stageOrigin + new Vector3(0f, 20f, 0f), Quaternion.identity);
+                        Character tcCh = tcInst.GetComponent<Character>();
+                        Humanoid tcHum = tcInst.GetComponent<Humanoid>();
+                        if (tcCh != null)
+                        {
+                            ApplyAshlandsDvergrBaseHealth(tcCh);
+                            var levelField = typeof(Character).GetField("m_level", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                            levelField?.SetValue(tcCh, 3);
+                        }
+                        if (tcHum != null && tcHum.m_defaultItems != null)
+                        {
+                            Inventory inv = tcHum.GetInventory();
+                            foreach (GameObject di in tcHum.m_defaultItems)
+                            {
+                                if (di != null) inv.AddItem(di, 1);
+                            }
+                            AshlandsDvergrEnhancer.ConfigureAshlandsCombatInventory(tcHum);
+                            float scaled0StarHp = tcCh.m_health;
+                            float scaled2StarHp = CalculateScaledMaxHealth(tcCh);
+                            foreach (ItemDrop.ItemData item in inv.GetAllItems())
+                            {
+                                if (item?.m_shared?.m_attack == null) continue;
+                                var sd = item.m_shared;
+                                var atk = sd.m_attack;
+                                if (sd.m_itemType == ItemDrop.ItemData.ItemType.OneHandedWeapon || sd.m_itemType == ItemDrop.ItemData.ItemType.TwoHandedWeapon || sd.m_itemType == ItemDrop.ItemData.ItemType.Bow)
+                                {
+                                    HitData testHit = new HitData { m_damage = sd.m_damages.Clone() };
+                                    // Simulate vanilla 2-star (2.0x) followed by SEMan_ModifyAttack_Postfix
+                                    testHit.m_damage.Modify(2.0f);
+                                    SEMan_ModifyAttack_Postfix(tcCh, ref testHit);
+                                    Log.LogInfo($"[RuntimeVerifyAttack {tcName}] hp0Star={scaled0StarHp}, hp2Star={scaled2StarHp} | item={item.m_dropPrefab?.name ?? sd.m_name} | atkAnim={atk.m_attackAnimation} | proj={atk.m_attackProjectile?.name} | bursts={atk.m_projectiles}/{atk.m_burstInterval}s | eitr={atk.m_attackEitr} | aiRange={sd.m_aiAttackRange}m | aiInterval={sd.m_aiAttackInterval}s | final2StarDmg=(pierce={testHit.m_damage.m_pierce:F1}, fire={testHit.m_damage.m_fire:F1}, frost={testHit.m_damage.m_frost:F1}, lightning={testHit.m_damage.m_lightning:F1}, blunt={testHit.m_damage.m_blunt:F1})");
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (tcInst != null) UnityEngine.Object.DestroyImmediate(tcInst);
+                        InsideConsoleSpawn = false;
+                        ConsoleExplicitLevel = 0;
+                        ZNetView.m_forceDisableInit = prevDisable;
+                    }
                 }
 
                 stageRoot = new GameObject("DvergrValidationStage");
@@ -1498,18 +1811,18 @@ namespace AshlandsDvergrMod
 
                 GameObject camObj = new GameObject("ValidationCamera");
                 camObj.transform.SetParent(stageRoot.transform, false);
-                camObj.transform.localPosition = new Vector3(0f, 1.15f, -4.8f);
+                camObj.transform.localPosition = new Vector3(0f, 1.15f, -3.7f);
                 camObj.transform.LookAt(stageOrigin + new Vector3(0f, 1.05f, 0f));
 
                 Camera cam = camObj.AddComponent<Camera>();
                 cam.clearFlags = CameraClearFlags.SolidColor;
                 cam.backgroundColor = new Color(0.11f, 0.10f, 0.12f, 1f);
-                cam.fieldOfView = 44f;
+                cam.fieldOfView = 42f;
                 cam.nearClipPlane = 0.1f;
                 cam.farClipPlane = 50f;
 
-                int width = 1920;
-                int height = 800;
+                int width = 1600;
+                int height = 900;
                 RenderTexture rt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
                 cam.targetTexture = rt;
                 cam.Render();
@@ -1565,7 +1878,84 @@ namespace AshlandsDvergrMod
 
         private void Start()
         {
+            if (TryReplaceWithVarietyDvergr())
+            {
+                return;
+            }
             ApplyCoolVisuals();
+        }
+
+        private bool TryReplaceWithVarietyDvergr()
+        {
+            if (_character == null || WasSpawnedBySpawner || _nview == null || !_nview.IsValid() || !_nview.IsOwner())
+            {
+                return false;
+            }
+
+            string objName = gameObject.name ?? string.Empty;
+            bool isStandardAshlandsRanger = objName.StartsWith("DvergerAshlands", StringComparison.OrdinalIgnoreCase);
+            bool isClassicRogue = objName.StartsWith("Dverger", StringComparison.OrdinalIgnoreCase) &&
+                                  !isStandardAshlandsRanger &&
+                                  objName.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) < 0;
+
+            if (!isStandardAshlandsRanger && !isClassicRogue)
+            {
+                return false;
+            }
+
+            ZDO zdo = _nview.GetZDO();
+            if (zdo == null || zdo.GetBool("AshlandsDvergrMod_VarietyChecked"))
+            {
+                return false;
+            }
+            zdo.Set("AshlandsDvergrMod_VarietyChecked", true);
+
+            string targetPrefabName = AshlandsDvergrPlugin.RollVarietyPrefabForSpawn();
+            if (isStandardAshlandsRanger && string.Equals(targetPrefabName, "DvergerAshlands", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            GameObject altPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(targetPrefabName);
+            if (altPrefab == null)
+            {
+                return false;
+            }
+
+            int targetLevel = Mathf.Max(1, _character.GetLevel());
+            Vector3 pos = transform.position;
+            Quaternion rot = transform.rotation;
+
+            AshlandsDvergrPlugin.PendingVarietySpawnLevel = targetLevel;
+            GameObject newObj;
+            try
+            {
+                newObj = UnityEngine.Object.Instantiate(altPrefab, pos, rot);
+            }
+            finally
+            {
+                AshlandsDvergrPlugin.PendingVarietySpawnLevel = 0;
+            }
+
+            if (newObj == null)
+            {
+                return false;
+            }
+
+            ZNetView newNview = newObj.GetComponent<ZNetView>();
+            if (newNview != null && newNview.IsValid() && newNview.GetZDO() != null)
+            {
+                ZDO newZdo = newNview.GetZDO();
+                newZdo.Set("AshlandsDvergrMod_IsAshlands", true);
+                newZdo.Set("AshlandsDvergrMod_VarietyChecked", true);
+            }
+            Character newCh = newObj.GetComponent<Character>();
+            if (newCh != null && newCh.GetLevel() != targetLevel)
+            {
+                newCh.SetLevel(targetLevel);
+            }
+            _nview.Destroy();
+            return true;
         }
 
         internal void CheckEquipmentVisualsChanged()
@@ -1641,11 +2031,220 @@ namespace AshlandsDvergrMod
             }
         }
 
+        internal static void ConfigureAshlandsCombatInventory(Humanoid hum)
+        {
+            if (hum == null)
+            {
+                return;
+            }
+            Inventory inv = hum.GetInventory();
+            if (inv == null)
+            {
+                return;
+            }
+            List<ItemDrop.ItemData> items = inv.GetAllItems();
+            if (items == null || items.Count == 0)
+            {
+                return;
+            }
+
+            string charName = hum.gameObject.name ?? string.Empty;
+            bool isMage = AshlandsDvergrPlugin.IsDvergrMageName(charName);
+            bool isSupportMage = AshlandsDvergrPlugin.IsDvergrSupportMageName(charName);
+            int level = Mathf.Max(1, hum.GetLevel());
+            bool useAshlandsWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value && (level >= 3 || (isMage && !isSupportMage));
+            if (!useAshlandsWep || isSupportMage)
+            {
+                return;
+            }
+
+            string wepPrefabName = AshlandsDvergrPlugin.GetEquivalentBloodWeaponPrefabName(charName);
+            GameObject wepPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(wepPrefabName);
+            ItemDrop wepDrop = wepPrefab != null ? wepPrefab.GetComponent<ItemDrop>() : null;
+            if (wepDrop == null || wepDrop.m_itemData == null || wepDrop.m_itemData.m_shared == null)
+            {
+                return;
+            }
+
+            ItemDrop.ItemData.SharedData srcShared = wepDrop.m_itemData.m_shared;
+            Attack srcAtk = srcShared.m_attack;
+            if (srcAtk == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                ItemDrop.ItemData item = items[i];
+                if (item == null || item.m_shared == null || item.m_shared.m_attack == null)
+                {
+                    continue;
+                }
+
+                string dropName = item.m_dropPrefab != null ? item.m_dropPrefab.name : item.m_shared.m_name;
+                if (string.IsNullOrEmpty(dropName))
+                {
+                    continue;
+                }
+
+                // 1. Fire Mage (DvergerMageFire) -> Staff of Fracturing (StaffClusterbomb)
+                if (string.Equals(wepPrefabName, "StaffClusterbomb", StringComparison.OrdinalIgnoreCase) &&
+                    (dropName.IndexOf("fireball", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     dropName.IndexOf("clusterbomb", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                    Attack clonedAtk = clonedShared.m_attack.Clone();
+                    if (srcAtk.m_attackProjectile != null)
+                    {
+                        clonedAtk.m_attackProjectile = srcAtk.m_attackProjectile;
+                    }
+                    clonedAtk.m_projectiles = Mathf.Max(1, srcAtk.m_projectiles);
+                    clonedAtk.m_burstInterval = srcAtk.m_burstInterval;
+                    clonedAtk.m_projectileAccuracy = srcAtk.m_projectileAccuracy;
+                    clonedAtk.m_projectileAccuracyMin = srcAtk.m_projectileAccuracyMin;
+                    clonedAtk.m_useCharacterFacing = srcAtk.m_useCharacterFacing;
+                    clonedAtk.m_useCharacterFacingYAim = srcAtk.m_useCharacterFacingYAim;
+                    clonedAtk.m_launchAngle = srcAtk.m_launchAngle;
+                    clonedAtk.m_projectileVel = srcAtk.m_projectileVel;
+                    clonedAtk.m_projectileVelMin = srcAtk.m_projectileVelMin;
+                    clonedAtk.m_attackEitr = 0f;
+                    clonedAtk.m_attackHealth = 0f;
+                    clonedAtk.m_attackHealthPercentage = 0f;
+                    clonedAtk.m_attackStamina = 0f;
+                    // Keep valid Dvergr animation ("attack_cast" or "attack_fireshower") so ZSyncAnimation triggers OnAttackTrigger!
+                    clonedShared.m_attack = clonedAtk;
+                    clonedShared.m_damages = srcShared.m_damages;
+                    if (clonedShared.m_damages.m_fire < 130f)
+                    {
+                        clonedShared.m_damages.m_fire = 130f;
+                    }
+                    if (srcShared.m_startEffect != null && srcShared.m_startEffect.m_effectPrefabs != null && srcShared.m_startEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_startEffect = srcShared.m_startEffect;
+                    }
+                    if (srcShared.m_triggerEffect != null && srcShared.m_triggerEffect.m_effectPrefabs != null && srcShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_triggerEffect = srcShared.m_triggerEffect;
+                    }
+                    clonedShared.m_aiAttackRange = Mathf.Max(16f, clonedShared.m_aiAttackRange);
+                    clonedShared.m_aiAttackInterval = dropName.IndexOf("clusterbomb", StringComparison.OrdinalIgnoreCase) >= 0 ? 18f : 5f;
+                    item.m_shared = clonedShared;
+                }
+                // 2. Ice Mage (DvergerMageIce) -> Dundr (StaffLightning)
+                else if (string.Equals(wepPrefabName, "StaffLightning", StringComparison.OrdinalIgnoreCase) &&
+                         dropName.IndexOf("icebolt", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                    Attack clonedAtk = clonedShared.m_attack.Clone();
+                    if (srcAtk.m_attackProjectile != null)
+                    {
+                        clonedAtk.m_attackProjectile = srcAtk.m_attackProjectile;
+                    }
+                    clonedAtk.m_projectiles = Mathf.Max(1, srcAtk.m_projectiles);
+                    clonedAtk.m_burstInterval = srcAtk.m_burstInterval;
+                    clonedAtk.m_projectileAccuracy = srcAtk.m_projectileAccuracy;
+                    clonedAtk.m_projectileAccuracyMin = srcAtk.m_projectileAccuracyMin;
+                    clonedAtk.m_projectileVel = srcAtk.m_projectileVel;
+                    clonedAtk.m_projectileVelMin = srcAtk.m_projectileVelMin;
+                    clonedAtk.m_attackEitr = 0f;
+                    clonedAtk.m_attackHealth = 0f;
+                    clonedAtk.m_attackHealthPercentage = 0f;
+                    clonedAtk.m_attackStamina = 0f;
+                    // Keep valid Dvergr animation ("attack_icicle")
+                    clonedShared.m_attack = clonedAtk;
+                    clonedShared.m_damages = srcShared.m_damages;
+                    if (srcShared.m_startEffect != null && srcShared.m_startEffect.m_effectPrefabs != null && srcShared.m_startEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_startEffect = srcShared.m_startEffect;
+                    }
+                    if (srcShared.m_triggerEffect != null && srcShared.m_triggerEffect.m_effectPrefabs != null && srcShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_triggerEffect = srcShared.m_triggerEffect;
+                    }
+                    clonedShared.m_aiAttackRange = 15f;
+                    clonedShared.m_aiAttackInterval = 5f;
+                    item.m_shared = clonedShared;
+                }
+                // 3. Support Mage (DvergerMageSupport) -> Staff of Frost (StaffIceShards) replacing DvergerMistile so Support Mage fires frost shard bursts while keeping Heal & Buff!
+                else if (string.Equals(wepPrefabName, "StaffIceShards", StringComparison.OrdinalIgnoreCase) &&
+                         dropName.IndexOf("Mistile", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                    Attack clonedAtk = clonedShared.m_attack.Clone();
+                    if (srcAtk.m_attackProjectile != null)
+                    {
+                        clonedAtk.m_attackProjectile = srcAtk.m_attackProjectile;
+                    }
+                    clonedAtk.m_attackAnimation = "attack_cast";
+                    clonedAtk.m_projectiles = 3;
+                    clonedAtk.m_burstInterval = 0.18f;
+                    clonedAtk.m_projectileAccuracy = srcAtk.m_projectileAccuracy;
+                    clonedAtk.m_projectileAccuracyMin = srcAtk.m_projectileAccuracyMin;
+                    clonedAtk.m_projectileVel = srcAtk.m_projectileVel;
+                    clonedAtk.m_projectileVelMin = srcAtk.m_projectileVelMin;
+                    clonedAtk.m_attackEitr = 0f;
+                    clonedAtk.m_attackHealth = 0f;
+                    clonedAtk.m_attackHealthPercentage = 0f;
+                    clonedAtk.m_attackStamina = 0f;
+                    clonedShared.m_attack = clonedAtk;
+                    clonedShared.m_damages = srcShared.m_damages;
+                    if (clonedShared.m_damages.m_frost < 65f)
+                    {
+                        clonedShared.m_damages.m_frost = 65f;
+                    }
+                    if (srcShared.m_startEffect != null && srcShared.m_startEffect.m_effectPrefabs != null && srcShared.m_startEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_startEffect = srcShared.m_startEffect;
+                    }
+                    if (srcShared.m_triggerEffect != null && srcShared.m_triggerEffect.m_effectPrefabs != null && srcShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_triggerEffect = srcShared.m_triggerEffect;
+                    }
+                    clonedShared.m_aiAttackRange = 16f;
+                    clonedShared.m_aiAttackInterval = 4.5f;
+                    clonedShared.m_aiAttackMaxAngle = 25f;
+                    item.m_shared = clonedShared;
+                }
+                // 4. 2-Star Ashlands Ranger (DvergerAshlands) -> Wound Ripper (CrossbowRipperBlood)
+                else if (string.Equals(wepPrefabName, "CrossbowRipperBlood", StringComparison.OrdinalIgnoreCase) &&
+                         dropName.IndexOf("Arbalest_shoot", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                    Attack clonedAtk = clonedShared.m_attack.Clone();
+                    clonedAtk.m_attackEitr = 0f;
+                    clonedAtk.m_attackHealth = 0f;
+                    clonedAtk.m_attackHealthPercentage = 0f;
+                    clonedShared.m_attack = clonedAtk;
+                    clonedShared.m_damages.m_pierce = Mathf.Max(clonedShared.m_damages.m_pierce, srcShared.m_damages.m_pierce);
+                    if (srcShared.m_startEffect != null && srcShared.m_startEffect.m_effectPrefabs != null && srcShared.m_startEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_startEffect = srcShared.m_startEffect;
+                    }
+                    if (srcShared.m_triggerEffect != null && srcShared.m_triggerEffect.m_effectPrefabs != null && srcShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                    {
+                        clonedShared.m_triggerEffect = srcShared.m_triggerEffect;
+                    }
+                    item.m_shared = clonedShared;
+                }
+            }
+        }
+
+        private static object ShallowCloneSharedData(ItemDrop.ItemData.SharedData shared)
+        {
+            var m = typeof(object).GetMethod("MemberwiseClone", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            return m != null ? m.Invoke(shared, null) : shared;
+        }
+
         internal void ApplyCoolVisuals(bool fromLevelEffects = false)
         {
             if (_character == null)
             {
                 return;
+            }
+
+            if (_character is Humanoid hum)
+            {
+                ConfigureAshlandsCombatInventory(hum);
             }
 
             AshlandsDvergrPlugin.EnsureVisualStarSetups(_character);
@@ -1757,7 +2356,11 @@ namespace AshlandsDvergrMod
 
         private static void EnsureBloodWeaponVisual(Transform root, VisEquipment visEq, int level)
         {
-            bool useBloodWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value && level >= 3;
+            Character ch = root.GetComponentInParent<Character>() ?? root.GetComponentInChildren<Character>();
+            string charName = ch != null ? ch.gameObject.name : root.name;
+            bool isMage = AshlandsDvergrPlugin.IsDvergrMageName(charName);
+            bool isSupportMage = AshlandsDvergrPlugin.IsDvergrSupportMageName(charName);
+            bool useBloodWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value && (level >= 3 || (isMage && !isSupportMage));
             Transform rightHand = visEq != null && visEq.m_rightHand != null
                 ? visEq.m_rightHand
                 : FindBone(root, visEq, "r.hand", "RightHand_Attach", "RightHand");
@@ -1767,7 +2370,7 @@ namespace AshlandsDvergrMod
             }
 
             Transform existingBloodWep = rightHand.Find("AshlandsDvergr_BloodWeapon");
-            if (!useBloodWep)
+            if (!useBloodWep || isSupportMage)
             {
                 if (existingBloodWep != null)
                 {
@@ -1812,8 +2415,6 @@ namespace AshlandsDvergrMod
                 return;
             }
 
-            Character ch = root.GetComponentInParent<Character>() ?? root.GetComponentInChildren<Character>();
-            string charName = ch != null ? ch.gameObject.name : root.name;
             string wepPrefabName = AshlandsDvergrPlugin.GetEquivalentBloodWeaponPrefabName(charName);
             GameObject wepPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(wepPrefabName);
             if (wepPrefab == null)
@@ -1848,8 +2449,58 @@ namespace AshlandsDvergrMod
             GameObject wepInst = UnityEngine.Object.Instantiate(attach.gameObject, rightHand.position, rightHand.rotation);
             wepInst.name = "AshlandsDvergr_BloodWeapon";
             wepInst.transform.SetParent(rightHand, worldPositionStays: true);
-            wepInst.transform.localPosition = Vector3.zero;
-            wepInst.transform.localRotation = Quaternion.identity;
+            float s = wepInst.transform.localScale.x;
+            if (string.Equals(wepPrefabName, "CrossbowRipperBlood", StringComparison.OrdinalIgnoreCase))
+            {
+                // Preserve wepInst.transform.localScale (0.01) computed by SetParent(..., worldPositionStays: true) for the 100x Armature bone!
+                // Quaternion.Euler(0f, 90f, 0f) maps:
+                //   attach +Z (barrel, rear -0.98 -> front +0.88) -> +X_rhand (forward away from torso, matching DvergerArbalest [-0.38, +1.20]),
+                //   attach +Y (vertical thickness) -> +Y_rhand (upward),
+                //   attach +X (bow limbs, -0.59 -> +0.59) -> -Z_rhand (horizontal across the hands, matching DvergerArbalest [-0.54, +0.49])!
+                // Offset (+0.46f * s, +0.06f * s, -0.02f * s) shifts the barrel forward along +X_rhand so the rear stock clears the torso.
+                wepInst.transform.localPosition = new Vector3(0.46f * s, 0.06f * s, -0.02f * s);
+                wepInst.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
+                Transform unloadedChild = wepInst.transform.Find("Unloaded");
+                Transform loadedChild = wepInst.transform.Find("Loaded");
+                if (loadedChild != null)
+                {
+                    loadedChild.gameObject.SetActive(true);
+                    if (unloadedChild != null)
+                    {
+                        unloadedChild.gameObject.SetActive(false);
+                    }
+                }
+            }
+            else if (string.Equals(wepPrefabName, "StaffClusterbomb", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(wepPrefabName, "StaffIceShards", StringComparison.OrdinalIgnoreCase))
+            {
+                // Player staffs lie along +Z_att in attach space, whereas DvergerMage staffs lie along +X_rhand with Y=+0.12, Z=-0.04.
+                // Rotating by Euler(0, 90, 0) maps +Z_att -> +X_rhand so the staff shaft sits inside the mage's right hand grip!
+                wepInst.transform.localPosition = new Vector3(0.0f * s, 0.12f * s, -0.04f * s);
+                wepInst.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
+            }
+            else if (string.Equals(wepPrefabName, "StaffLightning", StringComparison.OrdinalIgnoreCase))
+            {
+                // StaffLightning's grip in attach space is shifted toward the butt end (Z=[-0.30, +0.99]);
+                // Euler(0, 90, 0) + localPosition (-0.20*s, 0.12*s, -0.04*s) centers the shaft in the mage's hand.
+                wepInst.transform.localPosition = new Vector3(-0.20f * s, 0.12f * s, -0.04f * s);
+                wepInst.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
+                Transform unloadedChild = wepInst.transform.Find("Unloaded");
+                Transform loadedChild = wepInst.transform.Find("Loaded");
+                if (loadedChild != null)
+                {
+                    loadedChild.gameObject.SetActive(true);
+                    if (unloadedChild != null)
+                    {
+                        unloadedChild.gameObject.SetActive(false);
+                    }
+                }
+            }
+            else
+            {
+                wepInst.transform.localPosition = Vector3.zero;
+                wepInst.transform.localRotation = Quaternion.identity;
+            }
             wepInst.SetActive(true);
             foreach (Collider col in wepInst.GetComponentsInChildren<Collider>(includeInactive: true))
             {
@@ -1909,7 +2560,17 @@ namespace AshlandsDvergrMod
                 GameObject novaRingPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId("fx_DvergerMage_Nova_ring");
                 if (novaRingPrefab != null)
                 {
-                    GameObject ringInst = UnityEngine.Object.Instantiate(novaRingPrefab, existingBossRoot, false);
+                    bool prevDisableInit = ZNetView.m_forceDisableInit;
+                    ZNetView.m_forceDisableInit = true;
+                    GameObject ringInst;
+                    try
+                    {
+                        ringInst = UnityEngine.Object.Instantiate(novaRingPrefab, existingBossRoot, false);
+                    }
+                    finally
+                    {
+                        ZNetView.m_forceDisableInit = prevDisableInit;
+                    }
                     ringInst.name = "BossArcaneRing";
                     ringInst.transform.localPosition = new Vector3(0f, 0.85f, 0f);
                     ringInst.transform.localRotation = Quaternion.identity;
@@ -1928,7 +2589,17 @@ namespace AshlandsDvergrMod
                 // 2. Boss Chest Blood-Arcane Fire (vfx_crossbow_blood_fire)
                 if (chestBone != null && existingChestFx == null)
                 {
-                    GameObject chestInst = UnityEngine.Object.Instantiate(bloodFirePrefab, chestBone.position, chestBone.rotation);
+                    bool prevDisableInit = ZNetView.m_forceDisableInit;
+                    ZNetView.m_forceDisableInit = true;
+                    GameObject chestInst;
+                    try
+                    {
+                        chestInst = UnityEngine.Object.Instantiate(bloodFirePrefab, chestBone.position, chestBone.rotation);
+                    }
+                    finally
+                    {
+                        ZNetView.m_forceDisableInit = prevDisableInit;
+                    }
                     chestInst.name = "AshlandsDvergr_BossChestFX";
                     chestInst.transform.SetParent(chestBone, worldPositionStays: true);
                     chestInst.transform.localPosition = Vector3.zero;
@@ -1945,7 +2616,17 @@ namespace AshlandsDvergrMod
                 // 3. Boss Hand Blood-Arcane Fire on Left & Right Hands (vfx_crossbow_blood_fire)
                 if (leftHand != null && existingLeftHandFx == null)
                 {
-                    GameObject lhInst = UnityEngine.Object.Instantiate(bloodFirePrefab, leftHand.position, leftHand.rotation);
+                    bool prevDisableInit = ZNetView.m_forceDisableInit;
+                    ZNetView.m_forceDisableInit = true;
+                    GameObject lhInst;
+                    try
+                    {
+                        lhInst = UnityEngine.Object.Instantiate(bloodFirePrefab, leftHand.position, leftHand.rotation);
+                    }
+                    finally
+                    {
+                        ZNetView.m_forceDisableInit = prevDisableInit;
+                    }
                     lhInst.name = "AshlandsDvergr_BossHandFX";
                     lhInst.transform.SetParent(leftHand, worldPositionStays: true);
                     lhInst.transform.localPosition = Vector3.zero;
@@ -1961,7 +2642,17 @@ namespace AshlandsDvergrMod
 
                 if (rightHand != null && existingRightHandFx == null)
                 {
-                    GameObject rhInst = UnityEngine.Object.Instantiate(bloodFirePrefab, rightHand.position, rightHand.rotation);
+                    bool prevDisableInit = ZNetView.m_forceDisableInit;
+                    ZNetView.m_forceDisableInit = true;
+                    GameObject rhInst;
+                    try
+                    {
+                        rhInst = UnityEngine.Object.Instantiate(bloodFirePrefab, rightHand.position, rightHand.rotation);
+                    }
+                    finally
+                    {
+                        ZNetView.m_forceDisableInit = prevDisableInit;
+                    }
                     rhInst.name = "AshlandsDvergr_BossHandFX";
                     rhInst.transform.SetParent(rightHand, worldPositionStays: true);
                     rhInst.transform.localPosition = Vector3.zero;
@@ -1991,6 +2682,7 @@ namespace AshlandsDvergrMod
             foreach (ZNetView znv in fxInstance.GetComponentsInChildren<ZNetView>(includeInactive: true))
             {
                 znv.enabled = false;
+                UnityEngine.Object.DestroyImmediate(znv);
             }
             foreach (AudioSource audio in fxInstance.GetComponentsInChildren<AudioSource>(includeInactive: true))
             {
@@ -2100,10 +2792,8 @@ namespace AshlandsDvergrMod
                 _ => Color.white                         // 0-Star: original blue-teal skin
             });
 
-            // Weapon tint (subtle arcane-forged sheen on 2-star weapons while keeping wood/metal detail)
-            Color weaponColorMult = (!coolEnabled || level < 3)
-                ? Color.white
-                : new Color(1.08f, 0.92f, 1.18f, 1f);
+            // Weapon tint: preserve authentic bloodstone, iron, wood, and ice diffuse colors without pink/purple tinting
+            Color weaponColorMult = Color.white;
 
             foreach (Renderer r in renderers)
             {
@@ -2121,12 +2811,19 @@ namespace AshlandsDvergrMod
                         continue;
                     }
                     int matId = m.GetInstanceID();
+                    string shaderName = m.shader != null ? (m.shader.name ?? string.Empty) : string.Empty;
+                    bool isUnlitOrParticleShader = shaderName.IndexOf("Unlit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                   shaderName.IndexOf("Particle", StringComparison.OrdinalIgnoreCase) >= 0;
                     bool hasEmissionMap = m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap") != null;
                     bool isBodyMat = m.name.IndexOf("Body", StringComparison.OrdinalIgnoreCase) >= 0;
                     bool isWeaponMat = !isBodyMat && IsWeaponRenderer(r, m, visEq);
                     if (isWeaponMat)
                     {
                         isWeaponRenderer = true;
+                    }
+                    if (isUnlitOrParticleShader)
+                    {
+                        continue;
                     }
 
                     if (m.HasProperty("_Color"))
@@ -2180,19 +2877,8 @@ namespace AshlandsDvergrMod
                         }
                         else if (isWeaponMat)
                         {
-                            if (coolEnabled && level >= 3)
-                            {
-                                // Subtle purple-arcane weapon glow on 2-star Dvergrs
-                                m.EnableKeyword("_EMISSION");
-                                Color wepGlow = hasEmissionMap
-                                    ? new Color(1.60f, 0.35f, 2.40f, 1f)
-                                    : new Color(0.22f, 0.06f, 0.34f, 1f);
-                                m.SetColor("_EmissionColor", wepGlow);
-                            }
-                            else
-                            {
-                                m.SetColor("_EmissionColor", origEmission);
-                            }
+                            // Preserve native weapon emission (Custom/Creature weapons have no _EmissionMap, so forcing _EmissionColor washes them out bright pink in-game)
+                            m.SetColor("_EmissionColor", origEmission);
                         }
                         else
                         {
@@ -2229,31 +2915,7 @@ namespace AshlandsDvergrMod
                 if (isWeaponRenderer)
                 {
                     Transform existingWepLight = r.transform.Find("AshlandsDvergr_WeaponGlow");
-                    if (coolEnabled && level >= 3 && lightMult > 0f)
-                    {
-                        Light wepLight;
-                        if (existingWepLight == null)
-                        {
-                            GameObject wlObj = new GameObject("AshlandsDvergr_WeaponGlow");
-                            wlObj.transform.SetParent(r.transform, worldPositionStays: false);
-                            wlObj.transform.localPosition = Vector3.zero;
-                            wepLight = wlObj.AddComponent<Light>();
-                            wepLight.type = LightType.Point;
-                            wepLight.shadows = LightShadows.None;
-                        }
-                        else
-                        {
-                            wepLight = existingWepLight.GetComponent<Light>();
-                        }
-                        if (wepLight != null)
-                        {
-                            wepLight.enabled = true;
-                            wepLight.color = new Color(0.72f, 0.30f, 1.0f);
-                            wepLight.range = 1.15f;
-                            wepLight.intensity = 0.28f * lightMult;
-                        }
-                    }
-                    else if (existingWepLight != null)
+                    if (existingWepLight != null)
                     {
                         Light wepLight = existingWepLight.GetComponent<Light>();
                         if (wepLight != null)
