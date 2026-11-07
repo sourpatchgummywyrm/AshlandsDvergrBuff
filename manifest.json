@@ -1,6 +1,6 @@
 {
   "name": "AshlandsDvergrBuff",
-  "version_number": "2.0.2",
+  "version_number": "2.0.3",
   "website_url": "https://github.com/sourpatchgummywyrm/AshlandsDvergrBuff",
   "description": "Increases Dvergr spawn rate, variety (Mages & classic Dvergrs), health, stars (with 2-star boss FX), and equips/drops Ashlands Blood Weapons in the Ashlands.",
   "dependencies": [
