@@ -42,6 +42,7 @@ namespace AshlandsDvergrMod
         internal static ConfigEntry<float> MageHealthMultiplier;
         internal static ConfigEntry<float> MageDamageMultiplier;
         internal static ConfigEntry<bool> UseAshlandsBloodWeapons;
+        internal static ConfigEntry<bool> PreventUnprovokedLightningFriendlyFire;
         internal static ConfigEntry<float> PassiveHealPercentPerTick;
         internal static ConfigEntry<float> PassiveHealIntervalSeconds;
 
@@ -200,26 +201,26 @@ namespace AshlandsDvergrMod
                     new ConfigurationManagerAttributes { Order = --order }));
 
             // 3. Combat Stats & Passive Healing
-            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 1.20f,
+            HealthMultiplier = Config.Bind("3. Combat Stats", "HealthMultiplier", 1.30f,
                 new ConfigDescription(
-                    "Base health multiplier for Dvergrs in the Ashlands (default: 1.20 = +20% base HP: 600 -> 720).\n" +
-                    "Star levels add +25% HP per star (0-star: 720 HP, 1-star: 900 HP, 2-star: 1080 HP).\n" +
+                    "Base health multiplier for Dvergrs in the Ashlands (default: 1.30 = +30% base HP: 1000 -> 1300).\n" +
+                    "Star levels add +25% HP per star (0-star: 1300 HP, 1-star: 1625 HP, 2-star: 1950 HP).\n" +
                     "Range: 0.5 to 3.0",
                     new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 1.25f,
+            DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 1.10f,
                 new ConfigDescription(
                     "Outgoing damage multiplier for Ashlands Dvergrs when UseAshlandsBloodWeapons is false (melee strikes, arbalest bolts, and magic AOEs).\n" +
-                    "Default: 1.25 (+25% base damage, +25% at 1-star; 2-star skips default star damage scaling due to weapon buff).\n" +
+                    "Default: 1.10 (+10% base damage, +25% at 1-star; 2-star skips default star damage scaling due to weapon buff).\n" +
                     "Range: 0.5 to 3.0",
                     new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            MageHealthMultiplier = Config.Bind("3. Combat Stats", "MageHealthMultiplier", 1.08f,
+            MageHealthMultiplier = Config.Bind("3. Combat Stats", "MageHealthMultiplier", 1.15f,
                 new ConfigDescription(
                     "Separate base health multiplier for Dvergr Mages in the Ashlands (Fire, Ice, Support).\n" +
-                    "Set lower than warriors/crossbowmen by default to balance glass-cannon magic power (default: 1.08 = +8% base HP: 450 -> 486).\n" +
+                    "Set lower than warriors/crossbowmen by default to balance glass-cannon magic power (default: 1.15 = +15% base HP: 650 -> 747.5).\n" +
                     "Range: 0.5 to 3.0",
                     new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -235,6 +236,13 @@ namespace AshlandsDvergrMod
             UseAshlandsBloodWeapons = Config.Bind("3. Combat Stats", "UseAshlandsBloodWeapons", true,
                 new ConfigDescription(
                     "Equip 2-star Ashlands Dvergrs with their equivalent Ashlands Blood Weapon / upgraded magic staff (Wound Ripper for crossbowmen, Staff of Fracturing / Dundr / fully upgraded Staff of Frost for mages) with Bloodstone missing-HP damage scaling (0 and 1-star Dvergrs wield default weapons).\n" +
+                    "Default: true",
+                    null,
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            PreventUnprovokedLightningFriendlyFire = Config.Bind("3. Combat Stats", "PreventUnprovokedLightningFriendlyFire", true,
+                new ConfigDescription(
+                    "Prevent Dvergrs from taking player lightning damage (e.g. Storm weapon chain lightning) unless they have already been attacked directly by a player (aggravated).\n" +
                     "Default: true",
                     null,
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -1427,13 +1435,97 @@ namespace AshlandsDvergrMod
         private static float CalculateBloodWeaponDamageMultiplier(Character ch)
         {
             // Equivalent Ashlands Blood Weapon base ratio:
-            // Crossbowmen ~1.35x, Mages ~1.20x * MageDamageMultiplier adjustment
+            // Crossbowmen ~1.20x, Mages ~1.20x * MageDamageMultiplier adjustment
             // plus Bloodstone effect: +0.5% damage per 1% missing health (up to +50% at low HP)
             bool isMage = IsDvergrMage(ch);
-            float baseRatio = isMage ? 1.20f * (MageDamageMultiplier.Value / 1.10f) : 1.35f * (DamageMultiplier.Value / 1.25f);
+            float baseRatio = isMage ? 1.20f * (MageDamageMultiplier.Value / 1.10f) : 1.20f * (DamageMultiplier.Value / 1.10f);
             float missingHpRatio = ch != null ? Mathf.Clamp01(1f - ch.GetHealthPercentage()) : 0f;
             float bloodstoneBonus = 1f + missingHpRatio * 0.50f;
             return baseRatio * bloodstoneBonus;
+        }
+
+        internal static bool ShouldBlockUnprovokedPlayerLightning(Character target, HitData hit)
+        {
+            if (PreventUnprovokedLightningFriendlyFire == null || !PreventUnprovokedLightningFriendlyFire.Value ||
+                target == null || hit == null || target.IsPlayer())
+            {
+                return false;
+            }
+            if (target.m_faction != Character.Faction.Dverger && !IsDvergrPrefab(target.gameObject))
+            {
+                return false;
+            }
+            if (hit.m_damage.m_lightning <= 0f)
+            {
+                return false;
+            }
+            Character attacker = hit.GetAttacker();
+            if (attacker == null || (!attacker.IsPlayer() && !(attacker is Player)))
+            {
+                return false;
+            }
+
+            BaseAI baseAI = target.GetBaseAI();
+            if (baseAI != null && baseAI.IsAggravated())
+            {
+                return false;
+            }
+            ZNetView nview = target.GetComponent<ZNetView>();
+            if (nview != null && nview.IsValid())
+            {
+                ZDO zdo = nview.GetZDO();
+                if (zdo != null && zdo.GetBool("AshlandsDvergrMod_DirectPlayerHit"))
+                {
+                    return false;
+                }
+            }
+
+            float nonLightningDamage =
+                hit.m_damage.m_damage +
+                hit.m_damage.m_blunt +
+                hit.m_damage.m_slash +
+                hit.m_damage.m_pierce +
+                hit.m_damage.m_chop +
+                hit.m_damage.m_pickaxe +
+                hit.m_damage.m_fire +
+                hit.m_damage.m_frost +
+                hit.m_damage.m_poison +
+                hit.m_damage.m_spirit;
+
+            if (nonLightningDamage > 0f)
+            {
+                if (nview != null && nview.IsValid() && nview.IsOwner())
+                {
+                    nview.GetZDO()?.Set("AshlandsDvergrMod_DirectPlayerHit", true);
+                }
+                return false;
+            }
+
+            return true;
+        }
+
+        [HarmonyPatch(typeof(Character), nameof(Character.Damage))]
+        [HarmonyPrefix]
+        private static bool Character_Damage_Prefix(Character __instance, HitData hit)
+        {
+            if (ShouldBlockUnprovokedPlayerLightning(__instance, hit))
+            {
+                hit.m_damage.m_lightning = 0f;
+                return false;
+            }
+            return true;
+        }
+
+        [HarmonyPatch(typeof(Character), "RPC_Damage")]
+        [HarmonyPrefix]
+        private static bool Character_RPC_Damage_Prefix(Character __instance, HitData hit)
+        {
+            if (ShouldBlockUnprovokedPlayerLightning(__instance, hit))
+            {
+                hit.m_damage.m_lightning = 0f;
+                return false;
+            }
+            return true;
         }
 
         [HarmonyPatch(typeof(SEMan), "ModifyAttack")]
@@ -1687,6 +1779,122 @@ namespace AshlandsDvergrMod
                         ConsoleExplicitLevel = 0;
                         ZNetView.m_forceDisableInit = prevDisable;
                     }
+                }
+
+                // Live test for PreventUnprovokedLightningFriendlyFire with ZDOMan + ZNetScene + Player + DvergerAshlands
+                GameObject netHost = new GameObject("LiveTestNetHost");
+                netHost.SetActive(false);
+                bool prevToggle = PreventUnprovokedLightningFriendlyFire.Value;
+                bool prevZNetDisable = ZNetView.m_forceDisableInit;
+                GameObject testPlayerGo = null;
+                GameObject testDvergrGo = null;
+                try
+                {
+                    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+                    ZNet fakeZNet = netHost.AddComponent<ZNet>();
+                    typeof(ZNet).GetField("m_isServer", flags)?.SetValue(fakeZNet, true);
+                    typeof(ZNet).GetField("m_instance", flags)?.SetValue(null, fakeZNet);
+
+                    ZDOExtraData.Init();
+                    ZDOMan fakeZdoMan = (ZDOMan)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(ZDOMan));
+                    var zdoDict = new Dictionary<ZDOID, ZDO>();
+                    typeof(ZDOMan).GetField("m_objectsByID", flags)?.SetValue(fakeZdoMan, zdoDict);
+                    typeof(ZDOMan).GetField("m_width", flags)?.SetValue(fakeZdoMan, 16);
+                    typeof(ZDOMan).GetField("m_halfWidth", flags)?.SetValue(fakeZdoMan, 8);
+                    typeof(ZDOMan).GetField("m_objectsBySector", flags)?.SetValue(fakeZdoMan, new List<ZDO>[16 * 16]);
+                    typeof(ZDOMan).GetField("s_instance", flags)?.SetValue(null, fakeZdoMan);
+
+                    ZNetScene fakeZNetScene = netHost.AddComponent<ZNetScene>();
+                    var znsInstDict = new Dictionary<ZDO, ZNetView>();
+                    typeof(ZNetScene).GetField("m_instances", flags)?.SetValue(fakeZNetScene, znsInstDict);
+                    typeof(ZNetScene).GetField("s_instance", flags)?.SetValue(null, fakeZNetScene);
+
+                    ZNetView.m_forceDisableInit = true;
+                    testPlayerGo = new GameObject("TestPlayer");
+                    testPlayerGo.SetActive(false);
+                    Player testPlayer = testPlayerGo.AddComponent<Player>();
+                    testPlayer.m_faction = Character.Faction.Players;
+                    ZNetView playerNv = testPlayerGo.AddComponent<ZNetView>();
+                    ZDO playerZdo = new ZDO();
+                    ZDOID playerZdoid = new ZDOID(1L, 1001u);
+                    playerZdo.m_uid = playerZdoid;
+                    typeof(ZDOMan).GetField("m_sessionID", flags)?.SetValue(fakeZdoMan, 1L);
+                    playerZdo.SetOwnerInternal(1L);
+                    playerZdo.SetPrefab("Player".GetStableHashCode());
+                    zdoDict[playerZdoid] = playerZdo;
+                    znsInstDict[playerZdo] = playerNv;
+                    typeof(ZNetView).GetField("m_zdo", flags)?.SetValue(playerNv, playerZdo);
+                    typeof(Character).GetField("m_nview", flags)?.SetValue(testPlayer, playerNv);
+
+                    GameObject dvPrefab = ResolvePrefabByNameOrAssetId("DvergerAshlands");
+                    testDvergrGo = UnityEngine.Object.Instantiate(dvPrefab, stageOrigin + new Vector3(0f, 30f, 0f), Quaternion.identity);
+                    Character testDvergr = testDvergrGo.GetComponent<Character>();
+                    ZNetView dvergrNv = testDvergrGo.GetComponent<ZNetView>();
+                    BaseAI dvergrAi = testDvergr.GetBaseAI();
+                    ZDO dvergrZdo = new ZDO();
+                    ZDOID dvergrZdoid = new ZDOID(1L, 1002u);
+                    dvergrZdo.m_uid = dvergrZdoid;
+                    dvergrZdo.SetOwnerInternal(1L);
+                    dvergrZdo.SetPrefab("DvergerAshlands".GetStableHashCode());
+                    zdoDict[dvergrZdoid] = dvergrZdo;
+                    znsInstDict[dvergrZdo] = dvergrNv;
+                    typeof(ZNetView).GetField("m_zdo", flags)?.SetValue(dvergrNv, dvergrZdo);
+                    typeof(Character).GetField("m_nview", flags)?.SetValue(testDvergr, dvergrNv);
+                    typeof(BaseAI).GetField("m_nview", flags)?.SetValue(dvergrAi, dvergrNv);
+
+                    PreventUnprovokedLightningFriendlyFire.Value = true;
+
+                    // Case 1: Unprovoked pure lightning hit -> must be blocked
+                    HitData hit1 = new HitData { m_attacker = playerZdoid };
+                    hit1.m_damage.m_lightning = 50f;
+                    bool case1Allowed = Character_Damage_Prefix(testDvergr, hit1);
+
+                    // Case 2: Direct hybrid hit (slash + lightning) -> must be allowed & mark DirectPlayerHit
+                    HitData hit2 = new HitData { m_attacker = playerZdoid };
+                    hit2.m_damage.m_slash = 80f;
+                    hit2.m_damage.m_lightning = 30f;
+                    bool case2Allowed = Character_Damage_Prefix(testDvergr, hit2);
+
+                    // Case 3: Pure lightning hit AFTER direct hit -> must be allowed
+                    HitData hit3 = new HitData { m_attacker = playerZdoid };
+                    hit3.m_damage.m_lightning = 50f;
+                    bool case3Allowed = Character_Damage_Prefix(testDvergr, hit3);
+
+                    // Case 4: Reset DirectPlayerHit, set BaseAI aggravated -> pure lightning must be allowed
+                    dvergrZdo.Set("AshlandsDvergrMod_DirectPlayerHit", false);
+                    dvergrZdo.Set(ZDOVars.s_aggravated, true);
+                    typeof(BaseAI).GetField("m_aggravated", flags)?.SetValue(dvergrAi, true);
+                    typeof(BaseAI).GetField("m_lastAggravatedCheck", flags)?.SetValue(dvergrAi, Time.time);
+                    HitData hit4 = new HitData { m_attacker = playerZdoid };
+                    hit4.m_damage.m_lightning = 50f;
+                    bool case4Allowed = Character_Damage_Prefix(testDvergr, hit4);
+
+                    // Case 5: Reset aggravated, disable toggle -> pure lightning must be allowed
+                    dvergrZdo.Set(ZDOVars.s_aggravated, false);
+                    typeof(BaseAI).GetField("m_aggravated", flags)?.SetValue(dvergrAi, false);
+                    PreventUnprovokedLightningFriendlyFire.Value = false;
+                    HitData hit5 = new HitData { m_attacker = playerZdoid };
+                    hit5.m_damage.m_lightning = 50f;
+                    bool case5Allowed = Character_Damage_Prefix(testDvergr, hit5);
+
+                    bool allPass = !case1Allowed && hit1.m_damage.m_lightning == 0f &&
+                                   case2Allowed && hit2.m_damage.m_lightning == 30f &&
+                                   case3Allowed && hit3.m_damage.m_lightning == 50f &&
+                                   case4Allowed && hit4.m_damage.m_lightning == 50f &&
+                                   case5Allowed && hit5.m_damage.m_lightning == 50f;
+                    Log.LogInfo($"[RuntimeVerifyLightningFriendlyFire] PASS={allPass} (attackerIsPlayer={hit1.GetAttacker()?.IsPlayer()}, aiAggr={dvergrAi?.IsAggravated()}, directHit={dvergrZdo.GetBool("AshlandsDvergrMod_DirectPlayerHit")}) | unprovokedBlocked={!case1Allowed}(dmg={hit1.m_damage.m_lightning}) | directAllowed={case2Allowed}(dmg={hit2.m_damage.m_lightning}) | postDirectAllowed={case3Allowed}(dmg={hit3.m_damage.m_lightning}) | aggravatedAllowed={case4Allowed}(dmg={hit4.m_damage.m_lightning}) | toggleOffAllowed={case5Allowed}(dmg={hit5.m_damage.m_lightning})");
+                }
+                finally
+                {
+                    PreventUnprovokedLightningFriendlyFire.Value = prevToggle;
+                    ZNetView.m_forceDisableInit = prevZNetDisable;
+                    var flags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+                    typeof(ZDOMan).GetField("s_instance", flags)?.SetValue(null, null);
+                    typeof(ZNetScene).GetField("s_instance", flags)?.SetValue(null, null);
+                    typeof(ZNet).GetField("m_instance", flags)?.SetValue(null, null);
+                    if (testDvergrGo != null) UnityEngine.Object.DestroyImmediate(testDvergrGo);
+                    if (testPlayerGo != null) UnityEngine.Object.DestroyImmediate(testPlayerGo);
+                    UnityEngine.Object.DestroyImmediate(netHost);
                 }
 
                 stageRoot = new GameObject("DvergrValidationStage");
