@@ -18,6 +18,7 @@ namespace AshlandsDvergrMod
         public const string PluginName = "Ashlands Dvergr Boost";
         public const string PluginVersion = "2.0.5";
 
+        internal static AshlandsDvergrPlugin Instance;
         internal static ManualLogSource Log;
 
         // Configuration entries
@@ -82,9 +83,13 @@ namespace AshlandsDvergrMod
 
         private static FileSystemWatcher _configFileWatcher;
         private static DateTime _lastConfigReloadTime = DateTime.MinValue;
+        private static bool _isApplyingRemoteSync;
+        private static bool _wasRemoteClient;
+        private static readonly Dictionary<string, string> LastSyncedValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         private void Awake()
         {
+            Instance = this;
             Log = Logger;
 
             int order = 100;
@@ -379,6 +384,10 @@ namespace AshlandsDvergrMod
 
         private static void OnConfigFileDiskChanged(object sender, FileSystemEventArgs e)
         {
+            if (ZNet.instance != null && !ZNet.instance.IsServer())
+            {
+                return;
+            }
             if ((DateTime.Now - _lastConfigReloadTime).TotalMilliseconds < 1000)
             {
                 return;
@@ -399,11 +408,459 @@ namespace AshlandsDvergrMod
         private static void OnConfigReloaded(object sender, EventArgs e)
         {
             RefreshPrefabStats();
+            if (!_isApplyingRemoteSync && ZNet.instance != null && ZNet.instance.IsServer())
+            {
+                BroadcastConfigToPeers();
+            }
         }
 
         private static void OnSettingChanged(object sender, SettingChangedEventArgs e)
         {
+            if (_isApplyingRemoteSync)
+            {
+                RefreshPrefabStats();
+                return;
+            }
+
+            if (ZNet.instance != null)
+            {
+                if (ZNet.instance.IsServer())
+                {
+                    RefreshPrefabStats();
+                    BroadcastConfigToPeers();
+                    return;
+                }
+
+                if (e?.ChangedSetting != null)
+                {
+                    string key = e.ChangedSetting.Definition.Key;
+                    if (IsLocalAdminOrHost())
+                    {
+                        string val = e.ChangedSetting.GetSerializedValue();
+                        ZRoutedRpc.instance?.InvokeRoutedRPC("AshlandsDvergrMod_SetConfig", key, val);
+                    }
+                    else if (LastSyncedValues.TryGetValue(key, out string syncedVal))
+                    {
+                        _isApplyingRemoteSync = true;
+                        try
+                        {
+                            e.ChangedSetting.SetSerializedValue(syncedVal);
+                        }
+                        finally
+                        {
+                            _isApplyingRemoteSync = false;
+                        }
+                    }
+                }
+            }
             RefreshPrefabStats();
+        }
+
+        internal static bool IsLocalAdminOrHost()
+        {
+            if (ZNet.instance == null || ZNet.instance.IsServer())
+            {
+                return true;
+            }
+            try
+            {
+                return ZNet.instance.LocalPlayerIsAdminOrHost();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void UpdateConfigReadOnlyState()
+        {
+            if (Instance == null)
+            {
+                return;
+            }
+            bool readOnly = !IsLocalAdminOrHost();
+            foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> kv in Instance.Config)
+            {
+                if (kv.Value?.Description?.Tags == null)
+                {
+                    continue;
+                }
+                foreach (object tag in kv.Value.Description.Tags)
+                {
+                    if (tag is ConfigurationManagerAttributes attrs)
+                    {
+                        attrs.ReadOnly = readOnly;
+                    }
+                }
+            }
+        }
+
+        private static ZPackage BuildConfigPackage()
+        {
+            ZPackage pkg = new ZPackage();
+            if (Instance == null)
+            {
+                pkg.Write(0);
+                return pkg;
+            }
+            pkg.Write(Instance.Config.Count);
+            foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> kv in Instance.Config)
+            {
+                pkg.Write(kv.Key.Key);
+                pkg.Write(kv.Value.GetSerializedValue());
+            }
+            return pkg;
+        }
+
+        private static void BroadcastConfigToPeers(long targetPeerId = 0L)
+        {
+            if (ZRoutedRpc.instance == null || ZNet.instance == null || !ZNet.instance.IsServer())
+            {
+                return;
+            }
+            ZPackage pkg = BuildConfigPackage();
+            if (targetPeerId == 0L)
+            {
+                ZRoutedRpc.instance.InvokeRoutedRPC(ZRoutedRpc.Everybody, "AshlandsDvergrMod_SyncConfig", pkg);
+            }
+            else
+            {
+                ZRoutedRpc.instance.InvokeRoutedRPC(targetPeerId, "AshlandsDvergrMod_SyncConfig", pkg);
+            }
+        }
+
+        private static void RPC_AshlandsDvergrSyncConfig(long sender, ZPackage pkg)
+        {
+            if (Instance == null || pkg == null || (ZNet.instance != null && ZNet.instance.IsServer()))
+            {
+                return;
+            }
+            int count = pkg.ReadInt();
+            bool prevSave = Instance.Config.SaveOnConfigSet;
+            Instance.Config.SaveOnConfigSet = false;
+            _isApplyingRemoteSync = true;
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    string key = pkg.ReadString();
+                    string val = pkg.ReadString();
+                    LastSyncedValues[key] = val;
+                    ConfigEntryBase entry = FindConfigEntryByKey(key);
+                    entry?.SetSerializedValue(val);
+                }
+            }
+            finally
+            {
+                _isApplyingRemoteSync = false;
+                Instance.Config.SaveOnConfigSet = prevSave;
+            }
+            UpdateConfigReadOnlyState();
+            RefreshPrefabStats();
+            Log.LogInfo($"Synced {count} Ashlands Dvergr settings from world host/server.");
+        }
+
+        private static void RPC_AshlandsDvergrRequestSync(long sender)
+        {
+            if (ZNet.instance != null && ZNet.instance.IsServer())
+            {
+                BroadcastConfigToPeers(sender);
+            }
+        }
+
+        private static void RPC_AshlandsDvergrSetConfig(long sender, string key, string serializedValue)
+        {
+            if (Instance == null || ZNet.instance == null || !ZNet.instance.IsServer())
+            {
+                return;
+            }
+            bool isHost = sender == ZNet.GetUID();
+            bool isAdmin = false;
+            if (!isHost)
+            {
+                ZNetPeer peer = ZNet.instance.GetPeer(sender);
+                string hostName = peer?.m_socket?.GetHostName();
+                isAdmin = !string.IsNullOrEmpty(hostName) && ZNet.instance.IsAdmin(hostName);
+            }
+            if (!isHost && !isAdmin)
+            {
+                Log.LogWarning($"Rejected AshlandsDvergrMod_SetConfig('{key}') from non-admin peer {sender}.");
+                return;
+            }
+
+            ConfigEntryBase entry = FindConfigEntryByKey(key);
+            if (entry == null)
+            {
+                return;
+            }
+            entry.SetSerializedValue(serializedValue);
+            Instance.Config.Save();
+            RefreshPrefabStats();
+            BroadcastConfigToPeers();
+            Log.LogInfo($"Admin peer {sender} updated '{entry.Definition.Key}' = '{entry.GetSerializedValue()}'.");
+        }
+
+        internal static ConfigEntryBase FindConfigEntryByKey(string key)
+        {
+            if (Instance == null || string.IsNullOrEmpty(key))
+            {
+                return null;
+            }
+            foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> kv in Instance.Config)
+            {
+                if (string.Equals(kv.Key.Key, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return kv.Value;
+                }
+            }
+            return null;
+        }
+
+        internal static bool TryParseAndApplyConfigValue(ConfigEntryBase entry, string rawValue, out string error)
+        {
+            error = null;
+            if (entry == null)
+            {
+                error = "Unknown config key.";
+                return false;
+            }
+            try
+            {
+                object parsed;
+                Type t = entry.SettingType;
+                if (t == typeof(bool))
+                {
+                    if (string.Equals(rawValue, "1") || string.Equals(rawValue, "on", StringComparison.OrdinalIgnoreCase))
+                        parsed = true;
+                    else if (string.Equals(rawValue, "0") || string.Equals(rawValue, "off", StringComparison.OrdinalIgnoreCase))
+                        parsed = false;
+                    else
+                        parsed = bool.Parse(rawValue);
+                }
+                else if (t == typeof(int))
+                {
+                    parsed = int.Parse(rawValue, System.Globalization.CultureInfo.InvariantCulture);
+                }
+                else if (t == typeof(float))
+                {
+                    parsed = float.Parse(rawValue, System.Globalization.CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    parsed = TomlTypeConverter.ConvertToValue(rawValue, t);
+                }
+
+                if (entry.Description?.AcceptableValues != null)
+                {
+                    parsed = entry.Description.AcceptableValues.Clamp(parsed);
+                }
+
+                if (ZNet.instance == null || ZNet.instance.IsServer())
+                {
+                    entry.BoxedValue = parsed;
+                    Instance.Config.Save();
+                }
+                else
+                {
+                    _isApplyingRemoteSync = true;
+                    try
+                    {
+                        entry.BoxedValue = parsed;
+                    }
+                    finally
+                    {
+                        _isApplyingRemoteSync = false;
+                    }
+                    ZRoutedRpc.instance?.InvokeRoutedRPC("AshlandsDvergrMod_SetConfig", entry.Definition.Key, entry.GetSerializedValue());
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = $"Invalid value '{rawValue}' for {entry.Definition.Key} ({entry.SettingType.Name}): {ex.Message}";
+                return false;
+            }
+        }
+
+        internal static string FormatWorldStatsSummary()
+        {
+            string role = ZNet.instance == null ? "Local" : (ZNet.instance.IsServer() ? "Host/Server" : (IsLocalAdminOrHost() ? "Admin" : "Player (Read-Only)"));
+            float rangerBase = 1000f * Mathf.Max(0.1f, HealthMultiplier.Value);
+            float mageBase = 650f * Mathf.Max(0.1f, MageHealthMultiplier.Value);
+            List<string> enabledMages = GetEnabledVarietyMagePrefabNames();
+            string magesLabel = enabledMages.Count == 0 ? "None" : string.Join(", ", enabledMages);
+
+            return
+                $"=== Ashlands Dvergr Boost ({PluginVersion}) [{role}] ===\n" +
+                $"Ranger (DvergerAshlands): HP={rangerBase:F0} / {rangerBase * 1.25f:F0} / {rangerBase * 1.50f:F0} (0/1/2★), Dmg={DamageMultiplier.Value:F2}x, BloodWeapons={UseAshlandsBloodWeapons.Value}\n" +
+                $"Mage (650 base): HP={mageBase:F0} / {mageBase * 1.25f:F0} / {mageBase * 1.50f:F0} (0/1/2★), Dmg={MageDamageMultiplier.Value:F2}x, Enabled=[{magesLabel}]\n" +
+                $"Spawning: Rate={SpawnRateMultiplier.Value:F2}x, Respawn={CampRespawnIntervalMinutes.Value:F1}m, MageChance={VarietyDvergrSpawnChance.Value:F0}%, Ambient={EnableAmbientAshlandsSpawns.Value} ({AmbientGroupMin.Value}-{AmbientGroupMax.Value}, max {AmbientMaxSpawned.Value})\n" +
+                $"Combat/Stars: Levels={MinLevel.Value}-{MaxLevel.Value} ({LevelUpChance.Value:F0}% up), Heal={PassiveHealPercentPerTick.Value:F1}%/{PassiveHealIntervalSeconds.Value:F1}s, NoUnprovokedLightningFF={PreventUnprovokedLightningFriendlyFire.Value}\n" +
+                $"Visuals: Scale1★={VisualScale1Star.Value:F2}x, Scale2★={VisualScale2Star.Value:F2}x, CoolVisuals={EnableCoolVisuals.Value}, 2★BossFX={Enable2StarBossEffects.Value}, Aura={AuraLightIntensity.Value:F2}\n" +
+                $"Tip: Use 'dvergrconfig' (or '/dvergrconfig' in chat) to list all keys; admins/hosts can run 'dvergrconfig <key> <value>'.";
+        }
+
+        [HarmonyPatch(typeof(ZNet), "Start")]
+        [HarmonyPostfix]
+        private static void ZNet_Start_Postfix(ZNet __instance)
+        {
+            if (__instance == null)
+            {
+                return;
+            }
+            _wasRemoteClient = !__instance.IsServer();
+            LastSyncedValues.Clear();
+            if (ZRoutedRpc.instance != null)
+            {
+                ZRoutedRpc.instance.Register<ZPackage>("AshlandsDvergrMod_SyncConfig", RPC_AshlandsDvergrSyncConfig);
+                ZRoutedRpc.instance.Register("AshlandsDvergrMod_RequestSync", RPC_AshlandsDvergrRequestSync);
+                ZRoutedRpc.instance.Register<string, string>("AshlandsDvergrMod_SetConfig", RPC_AshlandsDvergrSetConfig);
+                if (!__instance.IsServer())
+                {
+                    ZRoutedRpc.instance.InvokeRoutedRPC("AshlandsDvergrMod_RequestSync");
+                }
+            }
+            UpdateConfigReadOnlyState();
+        }
+
+        [HarmonyPatch(typeof(ZNet), "RPC_PeerInfo")]
+        [HarmonyPostfix]
+        private static void ZNet_RPC_PeerInfo_Postfix(ZNet __instance, ZRpc rpc)
+        {
+            if (__instance == null || !__instance.IsServer() || rpc == null)
+            {
+                return;
+            }
+            var getPeer = AccessTools.Method(typeof(ZNet), "GetPeer", new[] { typeof(ZRpc) });
+            if (getPeer?.Invoke(__instance, new object[] { rpc }) is ZNetPeer peer && peer.m_uid != 0L)
+            {
+                BroadcastConfigToPeers(peer.m_uid);
+            }
+        }
+
+        [HarmonyPatch(typeof(ZNet), "OnDestroy")]
+        [HarmonyPostfix]
+        private static void ZNet_OnDestroy_Postfix()
+        {
+            if (_wasRemoteClient && Instance != null)
+            {
+                _wasRemoteClient = false;
+                LastSyncedValues.Clear();
+                _isApplyingRemoteSync = true;
+                try
+                {
+                    Instance.Config.Reload();
+                }
+                finally
+                {
+                    _isApplyingRemoteSync = false;
+                }
+            }
+            UpdateConfigReadOnlyState();
+        }
+
+        [HarmonyPatch(typeof(Terminal), "InitTerminal")]
+        [HarmonyPostfix]
+        private static void Terminal_InitTerminal_Postfix()
+        {
+            new Terminal.ConsoleCommand(
+                "dvergrstats",
+                "Show active Ashlands Dvergr Boost stats and settings for the current world.",
+                args =>
+                {
+                    foreach (string line in FormatWorldStatsSummary().Split('\n'))
+                    {
+                        args.Context.AddString(line);
+                    }
+                },
+                isCheat: false,
+                isNetwork: false,
+                onlyServer: false);
+
+            new Terminal.ConsoleCommand(
+                "dvergrconfig",
+                "View Ashlands Dvergr Boost config (all players) or set values (admins/hosts): dvergrconfig [list|<key> [<value>]|reset]",
+                args =>
+                {
+                    if (Instance == null)
+                    {
+                        return;
+                    }
+                    if (args.Length <= 1 || string.Equals(args[1], "list", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string role = IsLocalAdminOrHost() ? "Admin/Host - editable" : "Read-Only";
+                        args.Context.AddString($"=== Ashlands Dvergr Boost Config ({role}) ===");
+                        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> kv in Instance.Config)
+                        {
+                            string rangeStr = kv.Value.Description?.AcceptableValues != null ? $" ({kv.Value.Description.AcceptableValues.ToDescriptionString()})" : string.Empty;
+                            args.Context.AddString($"  {kv.Key.Key} = {kv.Value.GetSerializedValue()}{rangeStr}");
+                        }
+                        return;
+                    }
+
+                    if (string.Equals(args[1], "reset", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!IsLocalAdminOrHost())
+                        {
+                            args.Context.AddString("Only server hosts or admins can reset Ashlands Dvergr settings in-game.");
+                            return;
+                        }
+                        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> kv in Instance.Config)
+                        {
+                            TryParseAndApplyConfigValue(kv.Value, TomlTypeConverter.ConvertToString(kv.Value.DefaultValue, kv.Value.SettingType), out _);
+                        }
+                        args.Context.AddString("Reset all Ashlands Dvergr settings to defaults and synced to world.");
+                        return;
+                    }
+
+                    ConfigEntryBase target = FindConfigEntryByKey(args[1]);
+                    if (target == null)
+                    {
+                        args.Context.AddString($"Unknown config key '{args[1]}'. Run 'dvergrconfig list' to see all keys.");
+                        return;
+                    }
+
+                    if (args.Length == 2)
+                    {
+                        string rangeStr = target.Description?.AcceptableValues != null ? $" [{target.Description.AcceptableValues.ToDescriptionString()}]" : string.Empty;
+                        args.Context.AddString($"{target.Definition.Key} = {target.GetSerializedValue()} (default: {target.DefaultValue}){rangeStr}");
+                        if (!string.IsNullOrEmpty(target.Description?.Description))
+                        {
+                            args.Context.AddString(target.Description.Description.Replace("\n", " "));
+                        }
+                        return;
+                    }
+
+                    if (!IsLocalAdminOrHost())
+                    {
+                        args.Context.AddString("Only server hosts or admins can modify Ashlands Dvergr settings in-game. Use 'dvergrstats' or 'dvergrconfig' to view world settings.");
+                        return;
+                    }
+
+                    if (TryParseAndApplyConfigValue(target, args[2], out string err))
+                    {
+                        args.Context.AddString($"Updated {target.Definition.Key} = {target.GetSerializedValue()} (synced to world).");
+                    }
+                    else
+                    {
+                        args.Context.AddString(err);
+                    }
+                },
+                isCheat: false,
+                isNetwork: false,
+                onlyServer: false,
+                optionsFetcher: () =>
+                {
+                    List<string> opts = new List<string> { "list", "reset" };
+                    if (Instance != null)
+                    {
+                        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> kv in Instance.Config)
+                        {
+                            opts.Add(kv.Key.Key);
+                        }
+                    }
+                    return opts;
+                });
         }
 
         private static void RefreshPrefabStats()
@@ -1875,14 +2332,50 @@ namespace AshlandsDvergrMod
                     PreventUnprovokedLightningFriendlyFire.Value = false;
                     HitData hit5 = new HitData { m_attacker = playerZdoid };
                     hit5.m_damage.m_lightning = 50f;
-                    bool case5Allowed = Character_Damage_Prefix(testDvergr, hit5);
+                    bool case5Allowed = Character_Damage_Prefix(testDvergr, hit5) && Character_RPC_Damage_Prefix(testDvergr, hit5);
+
+                    // Case 6: Re-enable toggle -> pure lightning must be blocked again on both Damage & RPC_Damage
+                    PreventUnprovokedLightningFriendlyFire.Value = true;
+                    HitData hit6 = new HitData { m_attacker = playerZdoid };
+                    hit6.m_damage.m_lightning = 50f;
+                    bool case6AllowedDamage = Character_Damage_Prefix(testDvergr, hit6);
+                    HitData hit6Rpc = new HitData { m_attacker = playerZdoid };
+                    hit6Rpc.m_damage.m_lightning = 50f;
+                    bool case6AllowedRpc = Character_RPC_Damage_Prefix(testDvergr, hit6Rpc);
 
                     bool allPass = !case1Allowed && hit1.m_damage.m_lightning == 0f &&
                                    case2Allowed && hit2.m_damage.m_lightning == 30f &&
                                    case3Allowed && hit3.m_damage.m_lightning == 50f &&
                                    case4Allowed && hit4.m_damage.m_lightning == 50f &&
-                                   case5Allowed && hit5.m_damage.m_lightning == 50f;
-                    Log.LogInfo($"[RuntimeVerifyLightningFriendlyFire] PASS={allPass} (attackerIsPlayer={hit1.GetAttacker()?.IsPlayer()}, aiAggr={dvergrAi?.IsAggravated()}, directHit={dvergrZdo.GetBool("AshlandsDvergrMod_DirectPlayerHit")}) | unprovokedBlocked={!case1Allowed}(dmg={hit1.m_damage.m_lightning}) | directAllowed={case2Allowed}(dmg={hit2.m_damage.m_lightning}) | postDirectAllowed={case3Allowed}(dmg={hit3.m_damage.m_lightning}) | aggravatedAllowed={case4Allowed}(dmg={hit4.m_damage.m_lightning}) | toggleOffAllowed={case5Allowed}(dmg={hit5.m_damage.m_lightning})");
+                                   case5Allowed && hit5.m_damage.m_lightning == 50f &&
+                                   !case6AllowedDamage && hit6.m_damage.m_lightning == 0f &&
+                                   !case6AllowedRpc && hit6Rpc.m_damage.m_lightning == 0f;
+                    Log.LogInfo($"[RuntimeVerifyLightningFriendlyFire] PASS={allPass} (attackerIsPlayer={hit1.GetAttacker()?.IsPlayer()}, aiAggr={dvergrAi?.IsAggravated()}, directHit={dvergrZdo.GetBool("AshlandsDvergrMod_DirectPlayerHit")}) | unprovokedBlocked={!case1Allowed}(dmg={hit1.m_damage.m_lightning}) | directAllowed={case2Allowed}(dmg={hit2.m_damage.m_lightning}) | postDirectAllowed={case3Allowed}(dmg={hit3.m_damage.m_lightning}) | aggravatedAllowed={case4Allowed}(dmg={hit4.m_damage.m_lightning}) | toggleOffAllowed={case5Allowed}(dmg={hit5.m_damage.m_lightning}) | toggleOnAgainBlocked={!case6AllowedDamage && !case6AllowedRpc}(dmg={hit6.m_damage.m_lightning}/rpc={hit6Rpc.m_damage.m_lightning})");
+
+                    // Verify config sync, admin RPC, and world stats summary
+                    float prevHpMult = HealthMultiplier.Value;
+                    try
+                    {
+                        ZPackage pkg = BuildConfigPackage();
+                        typeof(ZNet).GetField("m_isServer", flags)?.SetValue(fakeZNet, false);
+                        HealthMultiplier.Value = 2.0f; // simulated local change before sync
+                        pkg.SetPos(0);
+                        RPC_AshlandsDvergrSyncConfig(1L, pkg);
+                        bool syncRestored = Mathf.Approximately(HealthMultiplier.Value, prevHpMult);
+                        string clientSummary = FormatWorldStatsSummary();
+
+                        typeof(ZNet).GetField("m_isServer", flags)?.SetValue(fakeZNet, true);
+                        RPC_AshlandsDvergrSetConfig(99999L, "HealthMultiplier", "2.5"); // non-existent/non-admin peer -> rejected
+                        bool nonAdminRejected = Mathf.Approximately(HealthMultiplier.Value, prevHpMult);
+                        RPC_AshlandsDvergrSetConfig(ZNet.GetUID(), "HealthMultiplier", "1.45"); // host -> accepted
+                        bool hostAccepted = Mathf.Approximately(HealthMultiplier.Value, 1.45f);
+                        Log.LogInfo($"[RuntimeVerifyConfigSync] PASS={syncRestored && nonAdminRejected && hostAccepted && clientSummary.Contains("Ashlands Dvergr Boost")} | syncRestored={syncRestored} | nonAdminRejected={nonAdminRejected} | hostAccepted={hostAccepted} | statsLines={clientSummary.Split('\n').Length}");
+                    }
+                    finally
+                    {
+                        HealthMultiplier.Value = prevHpMult;
+                        Instance?.Config.Save();
+                    }
                 }
                 finally
                 {
@@ -3181,5 +3674,6 @@ namespace AshlandsDvergrMod
     {
         public int? Order;
         public bool? Browsable;
+        public bool? ReadOnly;
     }
 }
