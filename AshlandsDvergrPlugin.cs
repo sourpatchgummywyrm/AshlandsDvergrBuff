@@ -56,6 +56,11 @@ namespace AshlandsDvergrMod
         internal static ConfigEntry<bool> Enable2StarBossEffects;
         internal static ConfigEntry<float> AuraLightIntensity;
 
+        internal static ConfigEntry<bool> EnableDeepNorthBuff;
+        internal static ConfigEntry<float> DeepNorthHealthMultiplier;
+        internal static ConfigEntry<float> DeepNorthDamageMultiplier;
+        internal static ConfigEntry<float> DeepNorthMageSpawnChance;
+
         internal static readonly string[] VarietyDvergrPrefabNames =
         {
             "DvergerMageFire",
@@ -68,13 +73,19 @@ namespace AshlandsDvergrMod
         private static readonly HashSet<int> PatchedSpawnAreas = new HashSet<int>();
         private static readonly Dictionary<int, float> OriginalPrefabHealth = new Dictionary<int, float>();
         private static readonly Dictionary<string, GameObject> CachedSoftRefPrefabs = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+        private static AnimationClip _cachedPlayerFrostShieldClip;
         private static readonly System.Random VarietyRng = new System.Random();
 
         private static readonly List<string> VarietyDeck = new List<string>(10);
         private static int VarietyDeckIndex;
         private static float LastDeckVarietyChance = -1f;
 
+        private static readonly List<string> DeepNorthDeck = new List<string>(10);
+        private static int DeepNorthDeckIndex;
+        private static float LastDeepNorthMageChance = -1f;
+
         internal static bool InsideSpawnerSpawn;
+        internal static bool InsideDeepNorthSpawn;
         internal static bool InsideConsoleSpawn;
         internal static bool InsideConsoleVarietySplit;
         internal static int ConsoleExplicitLevel;
@@ -95,10 +106,10 @@ namespace AshlandsDvergrMod
             int order = 100;
 
             // 1. Spawning - Multipliers & Ruin Spawners
-            SpawnRateMultiplier = Config.Bind("1. Spawning", "SpawnRateMultiplier", 3.0f,
+            SpawnRateMultiplier = Config.Bind("1. Spawning", "SpawnRateMultiplier", 2.0f,
                 new ConfigDescription(
                     "Global multiplier for Ashlands Dvergr spawn rate, spawn chance, group sizes, and spawner weights.\n" +
-                    "Default: 3.0 (3x faster spawns, 3x capacity).\n" +
+                    "Default: 2.0 (2x faster spawns, 2x capacity).\n" +
                     "Range: 0.5 to 10.0",
                     new AcceptableValueRange<float>(0.5f, 10.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -214,10 +225,10 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
-            DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 1.10f,
+            DamageMultiplier = Config.Bind("3. Combat Stats", "DamageMultiplier", 1.20f,
                 new ConfigDescription(
                     "Outgoing damage multiplier for Ashlands Dvergrs when UseAshlandsBloodWeapons is false (melee strikes, arbalest bolts, and magic AOEs).\n" +
-                    "Default: 1.10 (+10% base damage, +25% at 1-star; 2-star skips default star damage scaling due to weapon buff).\n" +
+                    "Default: 1.20 (+20% base damage, +25% at 1-star; 2-star skips default star damage scaling due to weapon buff).\n" +
                     "Range: 0.5 to 3.0",
                     new AcceptableValueRange<float>(0.5f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
@@ -331,6 +342,37 @@ namespace AshlandsDvergrMod
                     new AcceptableValueRange<float>(0.0f, 3.0f),
                     new ConfigurationManagerAttributes { Order = --order }));
 
+            // 5. Deep North
+            EnableDeepNorthBuff = Config.Bind("5. Deep North", "EnableDeepNorthBuff", true,
+                new ConfigDescription(
+                    "Slightly buff Deep North Dvergrs and split spawns 50/50 between Nord Crossbowmen and Protection + Northern Vengeance Mages (no healing).\n" +
+                    "Default: true",
+                    null,
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            DeepNorthHealthMultiplier = Config.Bind("5. Deep North", "DeepNorthHealthMultiplier", 1.15f,
+                new ConfigDescription(
+                    "Base health multiplier for Deep North Dvergrs (default: 1.15 = +15% base HP: 1500 -> 1725 for Nord Crossbowman, 1100 -> 1265 for Deep North Mage).\n" +
+                    "Range: 0.5 to 3.0",
+                    new AcceptableValueRange<float>(0.5f, 3.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            DeepNorthDamageMultiplier = Config.Bind("5. Deep North", "DeepNorthDamageMultiplier", 1.10f,
+                new ConfigDescription(
+                    "Outgoing damage multiplier for Deep North Dvergrs.\n" +
+                    "Default: 1.10 (+10% damage).\n" +
+                    "Range: 0.5 to 3.0",
+                    new AcceptableValueRange<float>(0.5f, 3.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
+            DeepNorthMageSpawnChance = Config.Bind("5. Deep North", "DeepNorthMageSpawnChance", 50f,
+                new ConfigDescription(
+                    "Percentage chance (0-100) for Deep North Dvergr spawns to be a Staff of Protection + Northern Vengeance Mage (no healing) instead of a Nord Crossbowman.\n" +
+                    "Default: 50% (50/50 split).\n" +
+                    "Range: 0.0 to 100.0",
+                    new AcceptableValueRange<float>(0.0f, 100.0f),
+                    new ConfigurationManagerAttributes { Order = --order }));
+
             // Text-file support: Save immediately so the .cfg file exists on disk with full comments
             Config.Save();
 
@@ -345,6 +387,10 @@ namespace AshlandsDvergrMod
             {
                 Runtime.MakeAllAssetsLoadable();
                 StartCoroutine(RenderDvergrValidationCoroutine());
+            }
+            else if (Environment.GetEnvironmentVariable("LIVE_WORLD_TEST") == "1")
+            {
+                StartCoroutine(LiveDeepNorthWorldTestCoroutine());
             }
 
             new Harmony(PluginGuid).PatchAll(typeof(AshlandsDvergrPlugin));
@@ -687,13 +733,20 @@ namespace AshlandsDvergrMod
             string role = ZNet.instance == null ? "Local" : (ZNet.instance.IsServer() ? "Host/Server" : (IsLocalAdminOrHost() ? "Admin" : "Player (Read-Only)"));
             float rangerBase = 1000f * Mathf.Max(0.1f, HealthMultiplier.Value);
             float mageBase = 650f * Mathf.Max(0.1f, MageHealthMultiplier.Value);
+            float dnRangerBase = 1500f * Mathf.Max(0.1f, DeepNorthHealthMultiplier.Value);
+            float dnMageBase = 1100f * Mathf.Max(0.1f, DeepNorthHealthMultiplier.Value);
+            float dnDmg0 = Mathf.Max(0.1f, DeepNorthDamageMultiplier.Value);
+            float dnDmg1 = dnDmg0 * 1.25f;
+            string dn2StarSuffix = UseAshlandsBloodWeapons.Value ? " (0-1★=NordCrossbow, 2★=ThunderbloodCrossbow+Blood)" : "";
             List<string> enabledMages = GetEnabledVarietyMagePrefabNames();
             string magesLabel = enabledMages.Count == 0 ? "None" : string.Join(", ", enabledMages);
 
             return
                 $"=== Ashlands Dvergr Boost ({PluginVersion}) [{role}] ===\n" +
-                $"Ranger (DvergerAshlands): HP={rangerBase:F0} / {rangerBase * 1.25f:F0} / {rangerBase * 1.50f:F0} (0/1/2★), Dmg={DamageMultiplier.Value:F2}x, BloodWeapons={UseAshlandsBloodWeapons.Value}\n" +
-                $"Mage (650 base): HP={mageBase:F0} / {mageBase * 1.25f:F0} / {mageBase * 1.50f:F0} (0/1/2★), Dmg={MageDamageMultiplier.Value:F2}x, Enabled=[{magesLabel}]\n" +
+                $"Ranger (DvergerAshlands): HP={rangerBase:F0} / {rangerBase * 1.25f:F0} / {rangerBase * 1.50f:F0} (0/1/2★), Dmg={DamageMultiplier.Value:F2}x / {DamageMultiplier.Value * 1.25f:F2}x / Q2-Base (0/1/2★), BloodWeapons={UseAshlandsBloodWeapons.Value}\n" +
+                $"Mage (650 base): HP={mageBase:F0} / {mageBase * 1.25f:F0} / {mageBase * 1.50f:F0} (0/1/2★), Dmg={MageDamageMultiplier.Value:F2}x / {MageDamageMultiplier.Value * 1.25f:F2}x / Q2-Base (0/1/2★), Enabled=[{magesLabel}]\n" +
+                $"Deep North Ranger (Enabled={EnableDeepNorthBuff.Value}): HP={dnRangerBase:F0} / {dnRangerBase * 1.25f:F0} / {dnRangerBase * 1.50f:F0} (0/1/2★), Dmg={dnDmg0:F2}x / {dnDmg1:F2}x / Q2-Base{dn2StarSuffix}\n" +
+                $"Deep North Mage (no heal): HP={dnMageBase:F0} / {dnMageBase * 1.25f:F0} / {dnMageBase * 1.50f:F0} (0/1/2★), Dmg={dnDmg0:F2}x / {dnDmg1:F2}x / Q2-Base, 0★=Prot, 1★=Prot+Vengeance, 2★=ThunderbloodOnly, Split={DeepNorthMageSpawnChance.Value:F0}%\n" +
                 $"Spawning: Rate={SpawnRateMultiplier.Value:F2}x, Respawn={CampRespawnIntervalMinutes.Value:F1}m, MageChance={VarietyDvergrSpawnChance.Value:F0}%, Ambient={EnableAmbientAshlandsSpawns.Value} ({AmbientGroupMin.Value}-{AmbientGroupMax.Value}, max {AmbientMaxSpawned.Value})\n" +
                 $"Combat/Stars: Levels={MinLevel.Value}-{MaxLevel.Value} ({LevelUpChance.Value:F0}% up), Heal={PassiveHealPercentPerTick.Value:F1}%/{PassiveHealIntervalSeconds.Value:F1}s, NoUnprovokedLightningFF={PreventUnprovokedLightningFriendlyFire.Value}\n" +
                 $"Visuals: Scale1★={VisualScale1Star.Value:F2}x, Scale2★={VisualScale2Star.Value:F2}x, CoolVisuals={EnableCoolVisuals.Value}, 2★BossFX={Enable2StarBossEffects.Value}, Aura={AuraLightIntensity.Value:F2}\n" +
@@ -870,7 +923,7 @@ namespace AshlandsDvergrMod
                 return;
             }
 
-            string[] dvergrPrefabsToRefresh = { "DvergerAshlands", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport", "Dverger" };
+            string[] dvergrPrefabsToRefresh = { "DvergerAshlands", "DvergerDeepNorth", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport", "Dverger" };
             foreach (string pName in dvergrPrefabsToRefresh)
             {
                 GameObject go = ZNetScene.instance.GetPrefab(pName);
@@ -879,10 +932,13 @@ namespace AshlandsDvergrMod
                     Character c = go.GetComponent<Character>();
                     if (c != null && OriginalPrefabHealth.TryGetValue(go.GetInstanceID(), out float baseHp))
                     {
+                        bool isDeepNorth = string.Equals(pName, "DvergerDeepNorth", StringComparison.OrdinalIgnoreCase);
                         bool isMage = IsDvergrMage(c);
-                        float ashlandsStandardHp = isMage ? Mathf.Max(baseHp, 650f) : baseHp;
-                        float hpMult = GetHealthMultiplierFor(c);
-                        c.m_health = ashlandsStandardHp * hpMult;
+                        float standardHp = isDeepNorth ? baseHp : (isMage ? Mathf.Max(baseHp, 650f) : baseHp);
+                        float hpMult = isDeepNorth
+                            ? (EnableDeepNorthBuff.Value ? Mathf.Max(0.1f, DeepNorthHealthMultiplier.Value) : 1f)
+                            : GetHealthMultiplierFor(c);
+                        c.m_health = standardHp * hpMult;
                         EnsureVisualStarSetups(c);
                         Log.LogInfo($"Refreshed {pName} prefab base health to {c.m_health} (mult={hpMult}).");
                     }
@@ -927,9 +983,53 @@ namespace AshlandsDvergrMod
             return false;
         }
 
+        internal static bool IsInDeepNorth(Vector3 pos)
+        {
+            if (WorldGenerator.instance != null && (WorldGenerator.instance.GetBiome(pos) & Heightmap.Biome.DeepNorth) != 0)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        internal static bool IsDeepNorthDvergr(Character ch)
+        {
+            if (ch == null || ch.IsPlayer() || EnableDeepNorthBuff == null || !EnableDeepNorthBuff.Value)
+            {
+                return false;
+            }
+            bool isDvergr = ch.m_faction == Character.Faction.Dverger ||
+                            ch.gameObject.name.IndexOf("Dverger", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            ch.gameObject.name.IndexOf("Dvergr", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isDvergr)
+            {
+                return false;
+            }
+            if (ch.gameObject.name.IndexOf("DeepNorth", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                InsideDeepNorthSpawn)
+            {
+                return true;
+            }
+            AshlandsDvergrEnhancer enhancer = ch.GetComponent<AshlandsDvergrEnhancer>();
+            if (enhancer != null && enhancer.IsDeepNorth)
+            {
+                return true;
+            }
+            ZNetView nview = ch.GetComponent<ZNetView>();
+            if (nview != null && nview.IsValid())
+            {
+                ZDO zdo = nview.GetZDO();
+                if (zdo != null && zdo.GetBool("AshlandsDvergrMod_IsDeepNorth"))
+                {
+                    return true;
+                }
+            }
+            return IsInDeepNorth(ch.transform.position);
+        }
+
         internal static bool IsAshlandsDvergr(Character ch)
         {
-            if (ch == null || ch.IsPlayer())
+            if (ch == null || ch.IsPlayer() || IsDeepNorthDvergr(ch))
             {
                 return false;
             }
@@ -958,6 +1058,11 @@ namespace AshlandsDvergrMod
                 }
             }
             return IsInAshlands(ch.transform.position);
+        }
+
+        internal static bool IsModdedDvergr(Character ch)
+        {
+            return IsAshlandsDvergr(ch) || IsDeepNorthDvergr(ch);
         }
 
         internal static bool IsDvergrMage(Character ch)
@@ -991,11 +1096,19 @@ namespace AshlandsDvergrMod
 
         internal static float GetHealthMultiplierFor(Character ch)
         {
+            if (IsDeepNorthDvergr(ch))
+            {
+                return Mathf.Max(0.1f, DeepNorthHealthMultiplier.Value);
+            }
             return IsDvergrMage(ch) ? Mathf.Max(0.1f, MageHealthMultiplier.Value) : Mathf.Max(0.1f, HealthMultiplier.Value);
         }
 
         internal static float GetDamageMultiplierFor(Character ch)
         {
+            if (IsDeepNorthDvergr(ch))
+            {
+                return Mathf.Max(0.1f, DeepNorthDamageMultiplier.Value);
+            }
             return IsDvergrMage(ch) ? Mathf.Max(0.1f, MageDamageMultiplier.Value) : Mathf.Max(0.1f, DamageMultiplier.Value);
         }
 
@@ -1105,6 +1218,46 @@ namespace AshlandsDvergrMod
                 RefillAndShuffleVarietyDeck(varietyChance);
             }
             return VarietyDeck[VarietyDeckIndex++];
+        }
+
+        internal static string RollDeepNorthPrefabForSpawn()
+        {
+            if (EnableDeepNorthBuff == null || !EnableDeepNorthBuff.Value)
+            {
+                return "DvergerDeepNorth";
+            }
+            float mageChance = Mathf.Clamp(DeepNorthMageSpawnChance.Value, 0f, 100f);
+            if (mageChance <= 0f)
+            {
+                return "DvergerDeepNorth";
+            }
+            if (mageChance >= 100f)
+            {
+                return "DvergerMageSupport";
+            }
+            if (DeepNorthDeck.Count == 0 || DeepNorthDeckIndex >= DeepNorthDeck.Count || Mathf.Abs(mageChance - LastDeepNorthMageChance) > 0.5f)
+            {
+                DeepNorthDeck.Clear();
+                DeepNorthDeckIndex = 0;
+                LastDeepNorthMageChance = mageChance;
+                int mageSlots = Mathf.Clamp(Mathf.RoundToInt(mageChance / 10f), 0, 10);
+                for (int i = 0; i < mageSlots; i++)
+                {
+                    DeepNorthDeck.Add("DvergerMageSupport");
+                }
+                for (int i = mageSlots; i < 10; i++)
+                {
+                    DeepNorthDeck.Add("DvergerDeepNorth");
+                }
+                for (int i = DeepNorthDeck.Count - 1; i > 0; i--)
+                {
+                    int j = VarietyRng.Next(i + 1);
+                    string tmp = DeepNorthDeck[i];
+                    DeepNorthDeck[i] = DeepNorthDeck[j];
+                    DeepNorthDeck[j] = tmp;
+                }
+            }
+            return DeepNorthDeck[DeepNorthDeckIndex++];
         }
 
         internal static int RollConfiguredLevel()
@@ -1245,18 +1398,24 @@ namespace AshlandsDvergrMod
             {
                 assetIdHex = prefabName switch
                 {
+                    "Player" => "3cc4f440c0f1043fc9f35cc14d2699cd",
                     "DvergerAshlands" => "2ece1cf15f2885a4da6da84af9d5c542",
+                    "DvergerDeepNorth" => "8b80dafa62497e64bbe7ffe09a7ad6f2",
                     "DvergerMage" => "8c3b1095f7874dc469e0e324a6fb82d7",
                     "DvergerMageFire" => "1ed38d388ceda5f4e89f5be4d1768fab",
                     "DvergerMageIce" => "8ad104a536dd94d4bb764f8a9f3d8ee7",
                     "DvergerMageSupport" => "c0e85e3d180619047bdf97cd98271a4d",
                     "Dverger" => "b780f1078c33d2344836ccefd3bf9352",
                     "CrossbowRipperBlood" => "483a950c53776e74ea40aef310fefbb2",
+                    "CrossbowGold" => "3c95d939c9bce9f418ef8fcf7d549e05",
+                    "CrossbowGold_BloodLightning" => "627967be231e19649bb184c9f3f93b45",
                     "StaffClusterbomb" => "d4812897e4412e540b7fa649d25b99d5",
                     "StaffLightning" => "90f15fa074aa08a478750566117d84d0",
                     "StaffRedTroll" => "87eebe8749379744eacfa37ea818aeab",
                     "StaffIceShards" => "d268d47613aec2963b1878ed2a224e1e",
                     "StaffShield" => "2ac6892f975d1667f96a24586cd6b976",
+                    "StaffFrostOrbs" => "e40884be0d0e7a444b6766378a8186b1",
+                    "StaffThunderBlood" => "42ab7d31d40bf9548908b5f2aa9f887a",
                     "BattleaxeSkullSplittur" => "131b6e64eaee51547a0b76f472190581",
                     "fx_fader_chestfire" => "affcfc1b631dafe4ba5eb9388ec6196a",
                     "fx_goblinking_nova_hand" => "ebf058290cad64993843155e16b4b6f6",
@@ -1293,7 +1452,7 @@ namespace AshlandsDvergrMod
                 return;
             }
 
-            string[] dvergrPrefabs = { "DvergerAshlands", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport", "Dverger" };
+            string[] dvergrPrefabs = { "DvergerAshlands", "DvergerDeepNorth", "DvergerMageFire", "DvergerMageIce", "DvergerMageSupport", "Dverger" };
             foreach (string pName in dvergrPrefabs)
             {
                 GameObject go = __instance.GetPrefab(pName);
@@ -1308,10 +1467,13 @@ namespace AshlandsDvergrMod
                             baseHp = ch.m_health;
                             OriginalPrefabHealth[id] = baseHp;
                         }
+                        bool isDeepNorth = string.Equals(pName, "DvergerDeepNorth", StringComparison.OrdinalIgnoreCase);
                         bool isMage = IsDvergrMage(ch);
-                        float ashlandsStandardHp = isMage ? Mathf.Max(baseHp, 650f) : baseHp;
-                        float hpMult = GetHealthMultiplierFor(ch);
-                        ch.m_health = ashlandsStandardHp * hpMult;
+                        float standardHp = isDeepNorth ? baseHp : (isMage ? Mathf.Max(baseHp, 650f) : baseHp);
+                        float hpMult = isDeepNorth
+                            ? (EnableDeepNorthBuff.Value ? Mathf.Max(0.1f, DeepNorthHealthMultiplier.Value) : 1f)
+                            : GetHealthMultiplierFor(ch);
+                        ch.m_health = standardHp * hpMult;
                         EnsureVisualStarSetups(ch);
                         Log.LogInfo($"Configured {pName} prefab base health: {baseHp} -> {ch.m_health} (mult={hpMult})");
                     }
@@ -1326,24 +1488,78 @@ namespace AshlandsDvergrMod
                 return;
             }
             EnsureVisualStarSetups(ch);
+            bool isDeepNorth = IsDeepNorthDvergr(ch);
             bool isMage = IsDvergrMage(ch);
-            float baseStandard = isMage ? 650f : 1000f;
+            float baseStandard = isDeepNorth ? (isMage ? 1100f : 1500f) : (isMage ? 650f : 1000f);
             float hpMult = GetHealthMultiplierFor(ch);
             float targetHp = baseStandard * hpMult;
-            if (ch.m_health < targetHp)
+            if (isDeepNorth || ch.m_health < targetHp)
             {
                 ch.m_health = targetHp;
             }
         }
 
+        internal static AnimationClip GetPlayerFrostShieldClip()
+        {
+            if (_cachedPlayerFrostShieldClip != null)
+            {
+                return _cachedPlayerFrostShieldClip;
+            }
+            GameObject playerPrefab = ResolvePrefabByNameOrAssetId("Player");
+            Animator playerAnim = playerPrefab != null ? playerPrefab.GetComponentInChildren<Animator>(includeInactive: true) : null;
+            if (playerAnim?.runtimeAnimatorController != null)
+            {
+                foreach (AnimationClip clip in playerAnim.runtimeAnimatorController.animationClips)
+                {
+                    if (clip != null && string.Equals(clip.name, "FrostShield", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _cachedPlayerFrostShieldClip = clip;
+                        break;
+                    }
+                }
+            }
+            return _cachedPlayerFrostShieldClip;
+        }
+
+        internal static void EnsureDeepNorthMageAnimatorOverride(Character ch)
+        {
+            if (ch == null || !IsDeepNorthDvergr(ch) || !IsDvergrMage(ch))
+            {
+                return;
+            }
+            AnimationClip frostShieldClip = GetPlayerFrostShieldClip();
+            if (frostShieldClip == null)
+            {
+                return;
+            }
+            Animator anim = ch.GetComponentInChildren<Animator>(includeInactive: true);
+            if (anim == null || anim.runtimeAnimatorController == null)
+            {
+                return;
+            }
+            if (anim.runtimeAnimatorController is AnimatorOverrideController existingAoc &&
+                existingAoc["Staff Magic Heal"] == frostShieldClip)
+            {
+                return;
+            }
+            AnimatorOverrideController aoc = new AnimatorOverrideController(anim.runtimeAnimatorController);
+            aoc["Staff Magic Heal"] = frostShieldClip;
+            anim.runtimeAnimatorController = aoc;
+        }
+
         internal static void EnsureAshlandsDvergrInitialized(Character ch, ZNetView nview)
         {
-            if (ch == null || !IsAshlandsDvergr(ch))
+            if (ch == null || !IsModdedDvergr(ch))
             {
                 return;
             }
 
+            bool isDeepNorth = IsDeepNorthDvergr(ch);
             ApplyAshlandsDvergrBaseHealth(ch);
+            if (isDeepNorth && IsDvergrMage(ch))
+            {
+                EnsureDeepNorthMageAnimatorOverride(ch);
+            }
 
             AshlandsDvergrEnhancer enhancer = ch.GetComponent<AshlandsDvergrEnhancer>();
             if (enhancer == null)
@@ -1354,6 +1570,10 @@ namespace AshlandsDvergrMod
             else if (VarietyReplacedInCurrentSpawn || PendingVarietySpawnLevel > 0)
             {
                 enhancer.WasSpawnedBySpawner = true;
+            }
+            if (isDeepNorth)
+            {
+                enhancer.IsDeepNorth = true;
             }
 
             if (nview == null)
@@ -1369,7 +1589,14 @@ namespace AshlandsDvergrMod
             {
                 return;
             }
-            zdo.Set("AshlandsDvergrMod_IsAshlands", true);
+            if (isDeepNorth)
+            {
+                zdo.Set("AshlandsDvergrMod_IsDeepNorth", true);
+            }
+            else
+            {
+                zdo.Set("AshlandsDvergrMod_IsAshlands", true);
+            }
             if (VarietyReplacedInCurrentSpawn || PendingVarietySpawnLevel > 0)
             {
                 zdo.Set("AshlandsDvergrMod_VarietyChecked", true);
@@ -1380,7 +1607,9 @@ namespace AshlandsDvergrMod
                 zdo.Set(RollKey, true);
                 int rolledLevel = PendingVarietySpawnLevel > 0
                     ? PendingVarietySpawnLevel
-                    : ((InsideConsoleSpawn && ConsoleExplicitLevel > 0) ? ConsoleExplicitLevel : RollConfiguredLevel());
+                    : ((InsideConsoleSpawn && ConsoleExplicitLevel > 0)
+                        ? ConsoleExplicitLevel
+                        : RollConfiguredLevel());
                 if (rolledLevel > ch.GetLevel())
                 {
                     ch.SetLevel(rolledLevel);
@@ -1430,9 +1659,12 @@ namespace AshlandsDvergrMod
                 ConsoleExplicitLevel = 0;
             }
 
+            bool isDeepNorthTarget = EnableDeepNorthBuff.Value &&
+                                     string.Equals(spawnName, "DvergerDeepNorth", StringComparison.OrdinalIgnoreCase);
             bool isExplicitMageRandom = string.Equals(spawnName, "DvergerMage", StringComparison.OrdinalIgnoreCase) ||
                                         string.Equals(spawnName, "DvergrMage", StringComparison.OrdinalIgnoreCase);
-            bool isVarietyTarget = isExplicitMageRandom ||
+            bool isVarietyTarget = isDeepNorthTarget ||
+                                   isExplicitMageRandom ||
                                    string.Equals(spawnName, "DvergerAshlands", StringComparison.OrdinalIgnoreCase) ||
                                    string.Equals(spawnName, "Dverger", StringComparison.OrdinalIgnoreCase) ||
                                    string.Equals(spawnName, "Dvergr", StringComparison.OrdinalIgnoreCase);
@@ -1440,6 +1672,11 @@ namespace AshlandsDvergrMod
             if (!isVarietyTarget || InsideConsoleVarietySplit)
             {
                 return true;
+            }
+
+            if (isDeepNorthTarget)
+            {
+                InsideDeepNorthSpawn = true;
             }
 
             int count = 1;
@@ -1452,7 +1689,9 @@ namespace AshlandsDvergrMod
 
             if (count <= 1)
             {
-                string rolledPrefab = isExplicitMageRandom ? PickRandomVarietyMagePrefabName() : RollVarietyPrefabForSpawn();
+                string rolledPrefab = isDeepNorthTarget
+                    ? RollDeepNorthPrefabForSpawn()
+                    : (isExplicitMageRandom ? PickRandomVarietyMagePrefabName() : RollVarietyPrefabForSpawn());
                 string countArg = parts.Length >= 3 ? " " + parts[2] : string.Empty;
                 text = $"spawn {rolledPrefab}{countArg}{tailArgs}";
                 VarietyReplacedInCurrentSpawn = true;
@@ -1463,7 +1702,9 @@ namespace AshlandsDvergrMod
             Dictionary<string, int> rolledCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < count; i++)
             {
-                string rolled = isExplicitMageRandom ? PickRandomVarietyMagePrefabName() : RollVarietyPrefabForSpawn();
+                string rolled = isDeepNorthTarget
+                    ? RollDeepNorthPrefabForSpawn()
+                    : (isExplicitMageRandom ? PickRandomVarietyMagePrefabName() : RollVarietyPrefabForSpawn());
                 rolledCounts.TryGetValue(rolled, out int cur);
                 rolledCounts[rolled] = cur + 1;
             }
@@ -1483,6 +1724,7 @@ namespace AshlandsDvergrMod
             {
                 InsideConsoleVarietySplit = false;
                 InsideConsoleSpawn = false;
+                InsideDeepNorthSpawn = false;
                 VarietyReplacedInCurrentSpawn = false;
                 ConsoleExplicitLevel = 0;
             }
@@ -1496,6 +1738,7 @@ namespace AshlandsDvergrMod
             if (!InsideConsoleVarietySplit)
             {
                 InsideConsoleSpawn = false;
+                InsideDeepNorthSpawn = false;
                 VarietyReplacedInCurrentSpawn = false;
                 ConsoleExplicitLevel = 0;
             }
@@ -1505,7 +1748,7 @@ namespace AshlandsDvergrMod
         [HarmonyPrefix]
         private static void Character_Awake_Prefix(Character __instance)
         {
-            if (!IsAshlandsDvergr(__instance))
+            if (!IsModdedDvergr(__instance))
             {
                 return;
             }
@@ -1531,7 +1774,7 @@ namespace AshlandsDvergrMod
         [HarmonyPostfix]
         private static void Character_SetLevel_Postfix(Character __instance, ZNetView ___m_nview)
         {
-            if (!IsAshlandsDvergr(__instance))
+            if (!IsModdedDvergr(__instance))
             {
                 return;
             }
@@ -1581,6 +1824,21 @@ namespace AshlandsDvergrMod
             {
                 return;
             }
+            bool isDeepNorthDvergrSpawner = EnableDeepNorthBuff.Value &&
+                (__instance.gameObject.name.IndexOf("DvergerDeepNorth", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 (IsDvergrPrefab(__instance.m_creaturePrefab) &&
+                  (__instance.m_creaturePrefab.name.IndexOf("DeepNorth", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   IsInDeepNorth(__instance.transform.position))));
+
+            if (isDeepNorthDvergrSpawner)
+            {
+                PatchedCreatureSpawners.Add(id);
+                __instance.m_minLevel = Mathf.Max(__instance.m_minLevel, MinLevel.Value);
+                __instance.m_maxLevel = Mathf.Max(__instance.m_maxLevel, MaxLevel.Value);
+                __instance.m_levelupChance = Mathf.Max(__instance.m_levelupChance, LevelUpChance.Value);
+                return;
+            }
+
             bool isAshlandsDvergrSpawner =
                 __instance.gameObject.name.IndexOf("DvergerAshlands", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 (IsDvergrPrefab(__instance.m_creaturePrefab) &&
@@ -1616,6 +1874,39 @@ namespace AshlandsDvergrMod
             __state = null;
             if (__instance == null || __instance.m_creaturePrefab == null)
             {
+                return;
+            }
+            if (EnableDeepNorthBuff.Value && IsDvergrPrefab(__instance.m_creaturePrefab) &&
+                (__instance.m_creaturePrefab.name.IndexOf("DeepNorth", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 IsInDeepNorth(__instance.transform.position)))
+            {
+                InsideDeepNorthSpawn = true;
+                if (___m_location != null)
+                {
+                    if (___m_location.m_enemyMinLevelOverride >= 0)
+                    {
+                        ___m_location.m_enemyMinLevelOverride = Mathf.Max(___m_location.m_enemyMinLevelOverride, MinLevel.Value);
+                    }
+                    if (___m_location.m_enemyMaxLevelOverride >= 0)
+                    {
+                        ___m_location.m_enemyMaxLevelOverride = Mathf.Max(___m_location.m_enemyMaxLevelOverride, MaxLevel.Value);
+                    }
+                    if (___m_location.m_enemyLevelUpOverride >= 0f)
+                    {
+                        ___m_location.m_enemyLevelUpOverride = Mathf.Max(___m_location.m_enemyLevelUpOverride, LevelUpChance.Value);
+                    }
+                }
+                string pickName = RollDeepNorthPrefabForSpawn();
+                if (!string.Equals(pickName, __instance.m_creaturePrefab.name, StringComparison.OrdinalIgnoreCase))
+                {
+                    GameObject altPrefab = ResolvePrefabByNameOrAssetId(pickName);
+                    if (altPrefab != null)
+                    {
+                        __state = __instance.m_creaturePrefab;
+                        __instance.m_creaturePrefab = altPrefab;
+                    }
+                }
+                VarietyReplacedInCurrentSpawn = true;
                 return;
             }
             if (IsDvergrPrefab(__instance.m_creaturePrefab) &&
@@ -1662,6 +1953,7 @@ namespace AshlandsDvergrMod
         private static void CreatureSpawner_Spawn_Postfix(CreatureSpawner __instance, GameObject __state)
         {
             InsideSpawnerSpawn = false;
+            InsideDeepNorthSpawn = false;
             VarietyReplacedInCurrentSpawn = false;
             if (__instance != null && __state != null)
             {
@@ -1891,14 +2183,9 @@ namespace AshlandsDvergrMod
 
         private static float CalculateBloodWeaponDamageMultiplier(Character ch)
         {
-            // Equivalent Ashlands Blood Weapon base ratio:
-            // Crossbowmen ~1.20x, Mages ~1.20x * MageDamageMultiplier adjustment
-            // plus Bloodstone effect: +0.5% damage per 1% missing health (up to +50% at low HP)
-            bool isMage = IsDvergrMage(ch);
-            float baseRatio = isMage ? 1.20f * (MageDamageMultiplier.Value / 1.10f) : 1.20f * (DamageMultiplier.Value / 1.10f);
+            // 2-star Q2 upgraded weapon deals exact Q2 base damage at full HP + Bloodstone missing-HP bonus (up to +50% at low HP)
             float missingHpRatio = ch != null ? Mathf.Clamp01(1f - ch.GetHealthPercentage()) : 0f;
-            float bloodstoneBonus = 1f + missingHpRatio * 0.50f;
-            return baseRatio * bloodstoneBonus;
+            return 1f + missingHpRatio * 0.50f;
         }
 
         internal static bool ShouldBlockUnprovokedPlayerLightning(Character target, HitData hit)
@@ -1989,20 +2276,16 @@ namespace AshlandsDvergrMod
         [HarmonyPostfix]
         private static void SEMan_ModifyAttack_Postfix(Character ___m_character, ref HitData hitData)
         {
-            if (hitData != null && IsAshlandsDvergr(___m_character))
+            if (hitData != null && IsModdedDvergr(___m_character))
             {
                 int stars = Mathf.Max(0, ___m_character.GetLevel() - 1);
                 // Vanilla Attack already multiplied damage by (1 + stars * 0.50).
-                // Rescale: +25% at 1-star (1.25x), but remove extra star damage scale from 1 to 2 star (caps at 1-star 1.25x)
-                // because 2-star already receives the advanced blood weapon / staff buff.
-                int effectiveDamageStars = Mathf.Min(stars, 1);
+                // 0★: 1.00x * configMult; 1★: 1.25x * configMult; 2★ (with BloodWeapons): exact Q2 weapon base (1.00x) + Bloodstone missing-HP bonus.
                 float vanillaStarMult = 1f + stars * 0.50f;
-                float gentleStarMult = 1f + effectiveDamageStars * 0.25f;
-                float baseMult = (UseAshlandsBloodWeapons.Value && stars >= 2)
+                float targetMult = (UseAshlandsBloodWeapons.Value && stars >= 2)
                     ? CalculateBloodWeaponDamageMultiplier(___m_character)
-                    : GetDamageMultiplierFor(___m_character);
-                float mult = baseMult * (gentleStarMult / vanillaStarMult);
-                hitData.m_damage.Modify(mult);
+                    : GetDamageMultiplierFor(___m_character) * (1f + Mathf.Min(stars, 1) * 0.25f);
+                hitData.m_damage.Modify(targetMult / vanillaStarMult);
             }
         }
 
@@ -2010,19 +2293,66 @@ namespace AshlandsDvergrMod
         [HarmonyPostfix]
         private static void Aoe_Setup_Postfix(Aoe __instance, Character owner, HitData hitData)
         {
-            if (__instance == null || !IsAshlandsDvergr(owner))
+            if (__instance == null || !IsModdedDvergr(owner))
             {
                 return;
+            }
+            if (_liveWorldTestActive)
+            {
+                _liveAoeEvents.Add($"{__instance.name} by {owner.name} (status={__instance.m_statusEffect})");
             }
             if (hitData == null || !__instance.m_useAttackSettings)
             {
                 int stars = Mathf.Max(0, owner.GetLevel() - 1);
-                int effectiveDamageStars = Mathf.Min(stars, 1);
-                float baseMult = (UseAshlandsBloodWeapons.Value && stars >= 2)
+                float targetMult = (UseAshlandsBloodWeapons.Value && stars >= 2)
                     ? CalculateBloodWeaponDamageMultiplier(owner)
-                    : GetDamageMultiplierFor(owner);
-                float mult = baseMult * (1f + effectiveDamageStars * 0.25f);
-                __instance.m_damage.Modify(mult);
+                    : GetDamageMultiplierFor(owner) * (1f + Mathf.Min(stars, 1) * 0.25f);
+                __instance.m_damage.Modify(targetMult);
+            }
+        }
+
+        [HarmonyPatch(typeof(Humanoid), nameof(Humanoid.StartAttack))]
+        [HarmonyPostfix]
+        private static void Humanoid_StartAttack_Postfix(Humanoid __instance, bool __result)
+        {
+            if (!__result || __instance == null || !IsDeepNorthDvergr(__instance) || !IsDvergrMage(__instance))
+            {
+                return;
+            }
+            ItemDrop.ItemData curWep = __instance.GetCurrentWeapon();
+            string curProj = curWep?.m_shared?.m_attack?.m_attackProjectile?.name;
+            bool castShield = string.Equals(curProj, "staff_shield_aoe", StringComparison.OrdinalIgnoreCase);
+            bool castVengeance = string.Equals(curProj, "staff_FrostOrbs_aoe", StringComparison.OrdinalIgnoreCase);
+            if (!castShield && !castVengeance)
+            {
+                return;
+            }
+            // Enforce strict Protection <-> Northern Vengeance alternation with >= 8s delay between casts
+            Inventory inv = __instance.GetInventory();
+            if (inv == null) return;
+            const float minDelayBetweenCasts = 8f;
+            foreach (ItemDrop.ItemData it in inv.GetAllItems())
+            {
+                if (it?.m_shared?.m_attack == null) continue;
+                string pName = it.m_shared.m_attack.m_attackProjectile?.name;
+                bool isShield = string.Equals(pName, "staff_shield_aoe", StringComparison.OrdinalIgnoreCase);
+                bool isVengeance = string.Equals(pName, "staff_FrostOrbs_aoe", StringComparison.OrdinalIgnoreCase);
+                if (!isShield && !isVengeance) continue;
+
+                if ((castShield && isVengeance) || (castVengeance && isShield))
+                {
+                    it.m_shared.m_aiPrioritized = true;
+                    float interval = Mathf.Max(minDelayBetweenCasts, it.m_shared.m_aiAttackInterval);
+                    float minLastTime = Time.time - (interval - minDelayBetweenCasts);
+                    if (it.m_lastAttackTime < minLastTime)
+                    {
+                        it.m_lastAttackTime = minLastTime;
+                    }
+                }
+                else
+                {
+                    it.m_shared.m_aiPrioritized = false;
+                }
             }
         }
 
@@ -2045,11 +2375,268 @@ namespace AshlandsDvergrMod
         [HarmonyPostfix]
         private static void Humanoid_GiveDefaultItems_Postfix(Humanoid __instance)
         {
-            if (__instance == null || !IsAshlandsDvergr(__instance))
+            if (__instance == null || !IsModdedDvergr(__instance))
             {
                 return;
             }
             AshlandsDvergrEnhancer.ConfigureAshlandsCombatInventory(__instance);
+        }
+
+        private static bool _liveWorldTestActive;
+        private static readonly List<string> _liveAoeEvents = new List<string>();
+        private static readonly List<string> _liveProjEvents = new List<string>();
+
+        [HarmonyPatch(typeof(Projectile), nameof(Projectile.Setup))]
+        [HarmonyPostfix]
+        private static void Projectile_Setup_Postfix(Projectile __instance, Character owner)
+        {
+            if (!_liveWorldTestActive || __instance == null || owner == null)
+            {
+                return;
+            }
+            if (IsModdedDvergr(owner) || __instance.name.IndexOf("FrostOrbs", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _liveProjEvents.Add($"{__instance.name} by {owner.name}");
+            }
+        }
+
+        private static IEnumerator LiveDeepNorthWorldTestCoroutine()
+        {
+            _liveWorldTestActive = true;
+            _liveAoeEvents.Clear();
+            _liveProjEvents.Clear();
+
+            float startupWait = 0f;
+            FejdStartup fejd = null;
+            while ((fejd = UnityEngine.Object.FindFirstObjectByType<FejdStartup>()) == null && startupWait < 30f)
+            {
+                startupWait += 0.5f;
+                yield return new WaitForSeconds(0.5f);
+            }
+            yield return new WaitForSeconds(2.0f);
+            Log.LogInfo($"=== [LiveWorldTest] FejdStartup ready (waited {startupWait:F1}s), booting temporary local world '__DNLiveWorld' ===");
+
+            try
+            {
+                PlayerProfile prof = new PlayerProfile("__DNLiveChar", FileHelpers.FileSource.Local);
+                prof.SetName("DNLiveTest");
+                prof.Save();
+                Game.SetProfile("__DNLiveChar", FileHelpers.FileSource.Local);
+
+                World world = World.GetCreateWorld("__DNLiveWorld", FileHelpers.FileSource.Local);
+
+                ZNet.m_onlineBackend = OnlineBackendType.Steamworks;
+                ZNet.SetServer(true, false, false, world.m_name, "", world);
+                ZNet.ResetServerHost();
+
+                if (fejd != null)
+                {
+                    AccessTools.Method(typeof(FejdStartup), "LoadMainScene")?.Invoke(fejd, null);
+                }
+                else
+                {
+                    UnityEngine.SceneManagement.SceneManager.LoadScene("main");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.LogError($"[LiveWorldTest] Failed to start world: {ex}");
+                System.Diagnostics.Process.GetCurrentProcess().Kill();
+                yield break;
+            }
+
+            float waitTimer = 0f;
+            while ((Player.m_localPlayer == null || ZNetScene.instance == null || ZoneSystem.instance == null || Console.instance == null) && waitTimer < 60f)
+            {
+                if (Valkyrie.m_instance != null)
+                {
+                    AccessTools.Method(typeof(Valkyrie), "DropPlayer")?.Invoke(Valkyrie.m_instance, new object[] { true });
+                }
+                waitTimer += 0.5f;
+                yield return new WaitForSeconds(0.5f);
+            }
+
+            if (Player.m_localPlayer == null)
+            {
+                Log.LogError("[LiveWorldTest] Timed out waiting for Player.m_localPlayer!");
+                System.Diagnostics.Process.GetCurrentProcess().Kill();
+                yield break;
+            }
+
+            if (Valkyrie.m_instance != null)
+            {
+                AccessTools.Method(typeof(Valkyrie), "DropPlayer")?.Invoke(Valkyrie.m_instance, new object[] { true });
+            }
+            yield return new WaitForSeconds(2.0f);
+            Player lp = Player.m_localPlayer;
+            lp.SetGodMode(true);
+            lp.SetGhostMode(true);
+            Log.LogInfo($"[LiveWorldTest] In world at pos={lp.transform.position}, biome={WorldGenerator.instance?.GetBiome(lp.transform.position)}");
+
+            Vector3 forward = lp.transform.forward;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+            forward.Normalize();
+            Vector3 arenaCenter = lp.transform.position + forward * 8f;
+            if (ZoneSystem.instance.GetGroundHeight(arenaCenter, out float gh))
+            {
+                arenaCenter.y = gh + 0.5f;
+            }
+
+            // Spawn 2x 2-star Deep North Rangers + 2x Deep North Mages to verify 2-star Thunderblood Crossbow, star scaling, and Mage cast alternation!
+            int dnCrossbowCount = 0;
+            int dnMageCount = 0;
+            List<Character> spawnedDvergrs = new List<Character>();
+            string[] liveRoster = { "DvergerDeepNorth", "DvergerMageSupport", "DvergerDeepNorth", "DvergerMageSupport" };
+            int[] liveLevels = { 1, 1, 3, 3 };
+            for (int i = 0; i < liveRoster.Length; i++)
+            {
+                string pick = liveRoster[i];
+                GameObject p = ZNetScene.instance.GetPrefab(pick) ?? ResolvePrefabByNameOrAssetId(pick);
+                if (p == null) continue;
+                Vector3 pos = arenaCenter + new Vector3((i - 1.5f) * 1.8f, 0f, 0f);
+                if (ZoneSystem.instance.GetGroundHeight(pos, out float h)) pos.y = h + 0.2f;
+                InsideDeepNorthSpawn = true;
+                VarietyReplacedInCurrentSpawn = true;
+                PendingVarietySpawnLevel = liveLevels[i];
+                GameObject inst = UnityEngine.Object.Instantiate(p, pos, Quaternion.LookRotation(-forward));
+                InsideDeepNorthSpawn = false;
+                VarietyReplacedInCurrentSpawn = false;
+                PendingVarietySpawnLevel = 0;
+                Character ch = inst.GetComponent<Character>();
+                if (ch != null)
+                {
+                    spawnedDvergrs.Add(ch);
+                    if (IsDvergrMage(ch)) dnMageCount++; else dnCrossbowCount++;
+                }
+            }
+
+            yield return new WaitForSeconds(1.5f);
+
+            bool allHaveNoHeal = true;
+            foreach (Character dv in spawnedDvergrs)
+            {
+                if (dv == null) continue;
+                Humanoid h = dv as Humanoid;
+                List<string> invNames = new List<string>();
+                if (h?.GetInventory() != null)
+                {
+                    foreach (var it in h.GetInventory().GetAllItems())
+                    {
+                        string n = it.m_dropPrefab?.name ?? it.m_shared?.m_name ?? "?";
+                        string proj = it.m_shared?.m_attack?.m_attackProjectile?.name ?? "";
+                        invNames.Add(string.IsNullOrEmpty(proj) ? n : $"{n}->{proj}");
+                        if (n.IndexOf("_heal", StringComparison.OrdinalIgnoreCase) >= 0) allHaveNoHeal = false;
+                    }
+                }
+                bool hasR = Array.Exists(dv.GetComponentsInChildren<Transform>(true), t => t.name == "AshlandsDvergr_BloodWeapon" && t.gameObject.activeInHierarchy);
+                bool hasL = Array.Exists(dv.GetComponentsInChildren<Transform>(true), t => t.name == "AshlandsDvergr_LeftWeapon" && t.gameObject.activeInHierarchy);
+                Log.LogInfo($"[LiveWorldTest Dvergr] name={dv.name}, isDN={IsDeepNorthDvergr(dv)}, hp={dv.GetHealth():F0}/{dv.GetMaxHealth():F0}, rWep={hasR}, lWep={hasL}, inv=[{string.Join(", ", invNames)}]");
+            }
+
+            // Spawn 1 high-HP StoneGolem / Lox wave (refilled if needed) so combat lasts ~34s to observe Protection <-> Northern Vengeance alternation & delay!
+            GameObject enemyPrefab = ZNetScene.instance.GetPrefab("Lox") ?? ZNetScene.instance.GetPrefab("Troll") ?? ZNetScene.instance.GetPrefab("Charred_Melee");
+            List<Character> enemies = new List<Character>();
+            if (enemyPrefab != null)
+            {
+                for (int e = 0; e < 3; e++)
+                {
+                    Vector3 ePos = arenaCenter + forward * 5.0f + new Vector3((e - 1) * 2.0f, 0f, 0f);
+                    if (ZoneSystem.instance.GetGroundHeight(ePos, out float eh)) ePos.y = eh + 0.2f;
+                    GameObject eInst = UnityEngine.Object.Instantiate(enemyPrefab, ePos, Quaternion.LookRotation(-forward));
+                    Character eCh = eInst.GetComponent<Character>();
+                    if (eCh != null) { eCh.SetLevel(3); enemies.Add(eCh); }
+                }
+                Log.LogInfo($"[LiveWorldTest] Spawned {enemies.Count}x 2-star {enemyPrefab.name} for extended live combat observation.");
+            }
+
+            bool sawShieldBuff = false;
+            bool sawFrostOrbsBuff = false;
+            bool sawHealCast = false;
+            bool sawShieldAoe = false;
+            bool sawFrostOrbsAoe = false;
+            bool sawFrostOrbProj = false;
+            bool screenshotTaken = false;
+            int lastLoggedAoeCount = 0;
+            List<string> castTimeline = new List<string>();
+            float combatStart = Time.time;
+
+            for (int sec = 1; sec <= 34; sec++)
+            {
+                yield return new WaitForSeconds(1.0f);
+                while (lastLoggedAoeCount < _liveAoeEvents.Count)
+                {
+                    string ev = _liveAoeEvents[lastLoggedAoeCount++];
+                    castTimeline.Add($"t={Time.time - combatStart:F1}s:{ev}");
+                    Log.LogInfo($"[LiveWorldCast] t={Time.time - combatStart:F1}s | {ev}");
+                }
+                List<string> states = new List<string>();
+                foreach (Character dv in spawnedDvergrs)
+                {
+                    if (dv == null) continue;
+                    List<string> ses = new List<string>();
+                    foreach (StatusEffect se in dv.GetSEMan().GetStatusEffects())
+                    {
+                        ses.Add(se.name);
+                        if (se.name.IndexOf("Staff_shield", StringComparison.OrdinalIgnoreCase) >= 0) sawShieldBuff = true;
+                        if (se.name.IndexOf("Staff_FrostOrbs", StringComparison.OrdinalIgnoreCase) >= 0) sawFrostOrbsBuff = true;
+                    }
+                    states.Add($"{dv.name.Replace("(Clone)", "")}[L{dv.GetLevel()}](hp={dv.GetHealth():F0}/{dv.GetMaxHealth():F0},se=[{string.Join(",", ses)}])");
+                }
+                foreach (string ev in _liveAoeEvents)
+                {
+                    if (ev.IndexOf("staff_shield_aoe", StringComparison.OrdinalIgnoreCase) >= 0) sawShieldAoe = true;
+                    if (ev.IndexOf("staff_FrostOrbs_aoe", StringComparison.OrdinalIgnoreCase) >= 0) sawFrostOrbsAoe = true;
+                    if (ev.IndexOf("DvergerStaffHeal_aoe", StringComparison.OrdinalIgnoreCase) >= 0) sawHealCast = true;
+                }
+                foreach (string pev in _liveProjEvents)
+                {
+                    if (pev.IndexOf("FrostOrbs", StringComparison.OrdinalIgnoreCase) >= 0) sawFrostOrbProj = true;
+                }
+                if (sec % 4 == 0 || sec <= 3)
+                {
+                    Log.LogInfo($"[LiveWorldTest t={sec}s] {string.Join(" | ", states)} | aoes={_liveAoeEvents.Count}, projs={_liveProjEvents.Count}");
+                }
+
+                if (!screenshotTaken && (sec == 10 || (sawShieldBuff && sawFrostOrbsBuff)))
+                {
+                    screenshotTaken = true;
+                    try
+                    {
+                        Camera cam = Camera.main;
+                        if (cam != null)
+                        {
+                            int sw = 1280, sh = 720;
+                            RenderTexture prevRt = cam.targetTexture;
+                            RenderTexture rt = new RenderTexture(sw, sh, 24, RenderTextureFormat.ARGB32);
+                            cam.targetTexture = rt;
+                            cam.Render();
+                            RenderTexture.active = rt;
+                            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGB24, false);
+                            tex.ReadPixels(new Rect(0, 0, sw, sh), 0, 0);
+                            tex.Apply();
+                            RenderTexture.active = null;
+                            cam.targetTexture = prevRt;
+                            File.WriteAllBytes("/tmp/dvergr_deepnorth_live.png", ImageConversion.EncodeToPNG(tex));
+                            Log.LogInfo("[LiveWorldTest] Captured live combat screenshot to /tmp/dvergr_deepnorth_live.png");
+                        }
+                    }
+                    catch (Exception sex)
+                    {
+                        Log.LogWarning($"[LiveWorldTest] Screenshot failed: {sex.Message}");
+                    }
+                }
+            }
+
+            // Test dvergrstats command live in world
+            Log.LogInfo("[LiveWorldTest dvergrstats]\n" + FormatWorldStatsSummary());
+            Log.LogInfo($"[LiveWorldTest CastTimeline] [{string.Join(" | ", castTimeline)}]");
+            Log.LogInfo($"[LiveWorldTest Events] AOEs={_liveAoeEvents.Count} | Projs={_liveProjEvents.Count}");
+            bool livePass = dnCrossbowCount > 0 && dnMageCount > 0 && allHaveNoHeal && !sawHealCast && (sawShieldAoe || sawShieldBuff) && (sawFrostOrbsAoe || sawFrostOrbsBuff);
+            Log.LogInfo($"[LiveWorldVerifyDeepNorth] PASS={livePass} | split=({dnCrossbowCount} NordCrossbow, {dnMageCount} Mage) | noHealInv={allHaveNoHeal} | noHealCast={!sawHealCast} | shieldAoe={sawShieldAoe} | shieldBuff={sawShieldBuff} | frostOrbsAoe={sawFrostOrbsAoe} | frostOrbsBuff={sawFrostOrbsBuff} | frostOrbProjFired={sawFrostOrbProj}");
+
+            yield return new WaitForSeconds(0.5f);
+            System.Diagnostics.Process.GetCurrentProcess().Kill();
         }
 
         private static IEnumerator RenderDvergrValidationCoroutine()
@@ -2155,6 +2742,239 @@ namespace AshlandsDvergrMod
                 if (visualTemplate == null)
                 {
                     visualTemplate = prefab.transform;
+                }
+
+                // Runtime verification for Deep North Dvergrs: 50/50 split, slight buff, Nord Crossbow, Staff of Protection + Northern Vengeance (no heal)
+                {
+                    Dictionary<string, int> dnDist = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    for (int r = 0; r < 100; r++)
+                    {
+                        string rolled = RollDeepNorthPrefabForSpawn();
+                        dnDist.TryGetValue(rolled, out int c);
+                        dnDist[rolled] = c + 1;
+                    }
+                    dnDist.TryGetValue("DvergerDeepNorth", out int dnCrossbowPct);
+                    dnDist.TryGetValue("DvergerMageSupport", out int dnMagePct);
+
+                    bool dnCrossbowOk = false;
+                    bool dnMageOk = false;
+                    bool dnMageNoHeal = false;
+                    float dnCrossbowHp = 0f;
+                    float dnCrossbowPierce = 0f;
+                    float dnMageHp = 0f;
+                    bool dnMageHasShield = false;
+                    bool dnMageHasVengeance = false;
+
+                    bool prevDisable = ZNetView.m_forceDisableInit;
+                    ZNetView.m_forceDisableInit = true;
+                    try
+                    {
+                        GameObject dnRangerPrefab = ResolvePrefabByNameOrAssetId("DvergerDeepNorth");
+                        if (dnRangerPrefab != null)
+                        {
+                            InsideDeepNorthSpawn = true;
+                            GameObject inst = UnityEngine.Object.Instantiate(dnRangerPrefab, stageOrigin + new Vector3(0f, 30f, 0f), Quaternion.identity);
+                            InsideDeepNorthSpawn = false;
+                            Character ch = inst.GetComponent<Character>();
+                            Humanoid dnHum = inst.GetComponent<Humanoid>();
+                            if (ch != null && dnHum != null)
+                            {
+                                ApplyAshlandsDvergrBaseHealth(ch);
+                                EnsureAshlandsDvergrInitialized(ch, null);
+                                Inventory dnInv = dnHum.GetInventory();
+                                if (dnHum.m_defaultItems != null)
+                                    foreach (GameObject di in dnHum.m_defaultItems) if (di != null) dnInv.AddItem(di, 1);
+                                AshlandsDvergrEnhancer.ConfigureAshlandsCombatInventory(dnHum);
+                                inst.GetComponent<AshlandsDvergrEnhancer>()?.ApplyCoolVisuals();
+                                dnCrossbowHp = ch.m_health;
+                                foreach (var it in dnInv.GetAllItems())
+                                {
+                                    string dn = it.m_dropPrefab != null ? it.m_dropPrefab.name : (it.m_shared?.m_name ?? "");
+                                    if (dn.IndexOf("Arbalest_shoot", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        dnCrossbowPierce = it.m_shared.m_damages.m_pierce;
+                                    }
+                                }
+                                bool hasNordVisual = inst.GetComponentInChildren<Transform>() != null &&
+                                                     Array.Exists(inst.GetComponentsInChildren<Transform>(true), t => t.name == "AshlandsDvergr_BloodWeapon");
+                                // Verify 0★ -> 1★ +25% damage scaling
+                                var lvlField = typeof(Character).GetField("m_level", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                                lvlField?.SetValue(ch, 1);
+                                HitData h0 = new HitData(); h0.m_damage.m_pierce = 264f;
+                                SEMan_ModifyAttack_Postfix(ch, ref h0);
+                                lvlField?.SetValue(ch, 2);
+                                HitData h1 = new HitData(); h1.m_damage.m_pierce = 264f * 1.5f; // vanilla 1★ multiplies by 1.5x
+                                SEMan_ModifyAttack_Postfix(ch, ref h1);
+                                lvlField?.SetValue(ch, 1);
+                                bool star1Scaled25 = Mathf.Abs(h1.m_damage.m_pierce - h0.m_damage.m_pierce * 1.25f) < 0.1f;
+                                Log.LogInfo($"[RuntimeVerifyStarDamageScaling] 0★={h0.m_damage.m_pierce:F1}, 1★={h1.m_damage.m_pierce:F1}, scaled25={star1Scaled25}");
+                                dnCrossbowOk = Mathf.Abs(dnCrossbowHp - 1725f) < 1f && dnCrossbowPierce >= 264f && hasNordVisual && star1Scaled25;
+                            }
+                            UnityEngine.Object.DestroyImmediate(inst);
+                        }
+
+                        GameObject dnMagePrefab = ResolvePrefabByNameOrAssetId("DvergerMageSupport");
+                        if (dnMagePrefab != null)
+                        {
+                            var lvlField = typeof(Character).GetField("m_level", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                            bool m0Ok = false, m1Ok = false, m2Ok = false;
+                            foreach (int testLvl in new[] { 1, 2, 3 })
+                            {
+                                InsideDeepNorthSpawn = true;
+                                GameObject inst = UnityEngine.Object.Instantiate(dnMagePrefab, stageOrigin + new Vector3(0f, 35f + testLvl, 0f), Quaternion.identity);
+                                InsideDeepNorthSpawn = false;
+                                Character ch = inst.GetComponent<Character>();
+                                Humanoid dnHum = inst.GetComponent<Humanoid>();
+                                if (ch != null && dnHum != null)
+                                {
+                                    lvlField?.SetValue(ch, testLvl);
+                                    EnsureAshlandsDvergrInitialized(ch, null);
+                                    Inventory dnInv = dnHum.GetInventory();
+                                    if (dnHum.m_defaultItems != null)
+                                        foreach (GameObject di in dnHum.m_defaultItems) if (di != null) dnInv.AddItem(di, 1);
+                                    AshlandsDvergrEnhancer.ConfigureAshlandsCombatInventory(dnHum);
+                                    inst.GetComponent<AshlandsDvergrEnhancer>()?.ApplyCoolVisuals();
+                                    bool noHeal = true, hasShield = false, hasVeng = false, hasTb = false;
+                                    foreach (var it in dnInv.GetAllItems())
+                                    {
+                                        string dn = it.m_dropPrefab != null ? it.m_dropPrefab.name : (it.m_shared?.m_name ?? "");
+                                        string projName = it.m_shared?.m_attack?.m_attackProjectile?.name ?? "";
+                                        if (dn.IndexOf("_heal", StringComparison.OrdinalIgnoreCase) >= 0) noHeal = false;
+                                        if (projName == "staff_shield_aoe") hasShield = true;
+                                        if (projName == "staff_FrostOrbs_aoe") hasVeng = true;
+                                        if (projName == "staff_thunderblood_projectile") hasTb = true;
+                                    }
+                                    bool hasRight = Array.Exists(inst.GetComponentsInChildren<Transform>(true), t => t.name == "AshlandsDvergr_BloodWeapon" && t.gameObject.activeInHierarchy);
+                                    bool hasOrb = Array.Exists(inst.GetComponentsInChildren<Transform>(true), t => t.name == "AshlandsDvergr_LeftWeapon" && t.gameObject.activeInHierarchy);
+                                    if (testLvl == 1)
+                                    {
+                                        dnMageHp = ch.m_health;
+                                        m0Ok = Mathf.Abs(dnMageHp - 1265f) < 1f && noHeal && hasShield && !hasVeng && !hasTb && hasRight && !hasOrb;
+                                    }
+                                    else if (testLvl == 2)
+                                    {
+                                        dnMageNoHeal = noHeal; dnMageHasShield = hasShield; dnMageHasVengeance = hasVeng;
+                                        m1Ok = noHeal && hasShield && hasVeng && !hasTb && hasRight && hasOrb;
+                                    }
+                                    else if (testLvl == 3)
+                                    {
+                                        m2Ok = noHeal && !hasShield && !hasVeng && hasTb && hasRight && !hasOrb;
+                                    }
+                                    Log.LogInfo($"[RuntimeVerifyDNMage L{testLvl}] noHeal={noHeal}, shield={hasShield}, veng={hasVeng}, thunderblood={hasTb}, rWep={hasRight}, lOrb={hasOrb}");
+                                }
+                                UnityEngine.Object.DestroyImmediate(inst);
+                            }
+                            dnMageOk = m0Ok && m1Ok && m2Ok;
+                        }
+                    }
+                    finally
+                    {
+                        InsideDeepNorthSpawn = false;
+                        ZNetView.m_forceDisableInit = prevDisable;
+                    }
+
+                    bool dnPass = dnCrossbowPct == 50 && dnMagePct == 50 && dnCrossbowOk && dnMageOk;
+                    Log.LogInfo($"[RuntimeVerifyDeepNorth] split=({dnCrossbowPct}% NordCrossbow / {dnMagePct}% ProtVengeanceMage), NordCrossbow=(hp={dnCrossbowHp:F0}, pierce={dnCrossbowPierce:F0}, ok={dnCrossbowOk}), Mage=(hp={dnMageHp:F0}, shield={dnMageHasShield}, vengeance={dnMageHasVengeance}, noHeal={dnMageNoHeal}, ok={dnMageOk}), PASS={dnPass}");
+
+                    // Verify Player 'FrostShield' AnimationClip override on Deep North Mage Animator
+                    {
+                        AnimationClip fsClip = GetPlayerFrostShieldClip();
+                        Log.LogInfo($"[RuntimeVerifyFrostShieldAnim] playerClip={fsClip?.name ?? "NULL"}, len={fsClip?.length ?? 0f:F2}s, human={fsClip?.humanMotion ?? false}, events={fsClip?.events?.Length ?? 0}");
+                    }
+                    foreach (string q2Wep in new[] { "CrossbowRipperBlood", "StaffClusterbomb", "StaffLightning", "CrossbowGold_BloodLightning", "StaffThunderBlood" })
+                    {
+                        var sd = ResolvePrefabByNameOrAssetId(q2Wep)?.GetComponent<ItemDrop>()?.m_itemData?.m_shared;
+                        if (sd == null) continue;
+                        var q1 = sd.m_damages;
+                        var q2 = q1;
+                        q2.Add(sd.m_damagesPerLevel);
+                        Log.LogInfo($"[RuntimeVerifyQ2Weapon {q2Wep}] Q1=(p={q1.m_pierce},b={q1.m_blunt},f={q1.m_fire},fr={q1.m_frost},l={q1.m_lightning}) -> Q2=(p={q2.m_pierce},b={q2.m_blunt},f={q2.m_fire},fr={q2.m_frost},l={q2.m_lightning})");
+                    }
+
+                    // Deep observation of Deep North spell projectiles, Aoe flags, StatusEffects, and live NPC SE_Shield / SE_React behavior
+                    foreach (string spellWepName in new[] { "StaffShield", "StaffFrostOrbs", "CrossbowGold" })
+                    {
+                        GameObject wp = ResolvePrefabByNameOrAssetId(spellWepName);
+                        if (wp == null) continue;
+                        ItemDrop id = wp.GetComponent<ItemDrop>();
+                        var sd = id?.m_itemData?.m_shared;
+                        var atk = sd?.m_attack;
+                        StatusEffect se = sd?.m_attackStatusEffect;
+                        if (se != null)
+                        {
+                            List<string> seFields = new List<string>();
+                            foreach (var fi in se.GetType().GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+                            {
+                                if (fi.DeclaringType == se.GetType())
+                                    seFields.Add($"{fi.Name}={fi.GetValue(se)}");
+                            }
+                            Log.LogInfo($"[DNStatusEffect {spellWepName}] type={se.GetType().FullName}, name={se.name}, ttl={se.m_ttl}, fields=[{string.Join(", ", seFields)}]");
+                        }
+                        if (atk != null)
+                        {
+                            Log.LogInfo($"[DNAtk {spellWepName}] atkType={atk.m_attackType}, anim={atk.m_attackAnimation}, proj={atk.m_attackProjectile?.name}, spawnOnTrig={atk.m_spawnOnTrigger?.name}, aiTarget={sd.m_aiTargetType}, aiRange={sd.m_aiAttackRange}");
+                        }
+                    }
+
+                    // Observe Deep North Mage configured AI attack items & test SE_Shield + SE_React on NPC SEMan
+                    {
+                        bool prevDis = ZNetView.m_forceDisableInit;
+                        ZNetView.m_forceDisableInit = true;
+                        GameObject dnMageTest = null;
+                        try
+                        {
+                            GameObject dnMagePrefab2 = ResolvePrefabByNameOrAssetId("DvergerMageSupport");
+                            if (dnMagePrefab2 != null)
+                            {
+                                InsideDeepNorthSpawn = true;
+                                dnMageTest = UnityEngine.Object.Instantiate(dnMagePrefab2, stageOrigin + new Vector3(0f, 40f, 0f), Quaternion.identity);
+                                InsideDeepNorthSpawn = false;
+                                Character mCh = dnMageTest.GetComponent<Character>();
+                                Humanoid mHum = dnMageTest.GetComponent<Humanoid>();
+                                EnsureAshlandsDvergrInitialized(mCh, null);
+                                Inventory mInv = mHum.GetInventory();
+                                if (mHum.m_defaultItems != null)
+                                    foreach (GameObject di in mHum.m_defaultItems) if (di != null) mInv.AddItem(di, 1);
+                                AshlandsDvergrEnhancer.ConfigureAshlandsCombatInventory(mHum);
+                                foreach (var it in mInv.GetAllItems())
+                                {
+                                    if (it?.m_shared?.m_attack == null) continue;
+                                    Log.LogInfo($"[DNMageInv] item={it.m_dropPrefab?.name ?? it.m_shared.m_name}, aiTarget={it.m_shared.m_aiTargetType}, prio={it.m_shared.m_aiPrioritized}, atkType={it.m_shared.m_attack.m_attackType}, anim={it.m_shared.m_attack.m_attackAnimation}, proj={it.m_shared.m_attack.m_attackProjectile?.name}, range={it.m_shared.m_aiAttackRange}, interval={it.m_shared.m_aiAttackInterval}");
+                                }
+
+                                // Test SE_Shield & SE_React directly on NPC SEMan
+                                StatusEffect shieldSe = ResolvePrefabByNameOrAssetId("StaffShield")?.GetComponent<ItemDrop>()?.m_itemData?.m_shared?.m_attackStatusEffect;
+                                StatusEffect orbsSe = ResolvePrefabByNameOrAssetId("StaffFrostOrbs")?.GetComponent<ItemDrop>()?.m_itemData?.m_shared?.m_attackStatusEffect;
+                                SEMan seman = mCh.GetSEMan();
+                                StatusEffect appliedShield = shieldSe != null ? seman.AddStatusEffect(shieldSe) : null;
+                                StatusEffect appliedOrbs = orbsSe != null ? seman.AddStatusEffect(orbsSe) : null;
+                                HitData simHit = new HitData();
+                                simHit.m_damage.m_blunt = 100f;
+                                float shieldBefore = simHit.m_damage.m_blunt;
+                                appliedShield?.OnDamaged(simHit, null);
+                                float shieldAfter = simHit.m_damage.m_blunt;
+                                bool reactNoThrow = true;
+                                try
+                                {
+                                    HitData reactHit = new HitData();
+                                    reactHit.m_damage.m_blunt = 20f;
+                                    appliedOrbs?.OnDamaged(reactHit, mCh);
+                                }
+                                catch (Exception rex)
+                                {
+                                    reactNoThrow = false;
+                                    Log.LogWarning($"[DNMageSE] SE_React.OnDamaged threw: {rex.Message}");
+                                }
+                                Log.LogInfo($"[RuntimeObserveDeepNorthSpells] shieldApplied={appliedShield != null}, shieldAbsorbed={shieldBefore}->{shieldAfter}, frostOrbsApplied={appliedOrbs != null}, frostOrbsReactNoThrow={reactNoThrow}");
+                            }
+                        }
+                        finally
+                        {
+                            InsideDeepNorthSpawn = false;
+                            if (dnMageTest != null) UnityEngine.Object.DestroyImmediate(dnMageTest);
+                            ZNetView.m_forceDisableInit = prevDis;
+                        }
+                    }
                 }
 
                 // Comprehensive runtime tests for Console Variety Spawning, Mistlands Mage Scaling, and Ashlands Weapon Attacks
@@ -2538,6 +3358,116 @@ namespace AshlandsDvergrMod
                 string outPath = "/tmp/dvergr_render_validation.png";
                 File.WriteAllBytes(outPath, png);
                 Log.LogInfo($"=== Saved validation render ({png.Length} bytes) to {outPath} ===");
+
+                // Deep North visual validation render: 0★ Mage (Prot only), 1★ Mage (Prot + Vengeance orb), 2★ Mage (Thunderblood only)
+                GameObject dnStage = new GameObject("DeepNorthValidationStage");
+                dnStage.transform.position = stageOrigin + new Vector3(30f, 0f, 0f);
+                string[] dnNames = { "DvergerMageSupport", "DvergerMageSupport", "DvergerMageSupport" };
+                int[] dnLvls = { 1, 2, 3 };
+                float[] dnX = { -1.85f, 0.0f, 1.85f };
+                for (int i = 0; i < 3; i++)
+                {
+                    GameObject curPrefab = ResolvePrefabByNameOrAssetId(dnNames[i]) ?? prefab;
+                    Transform curVisualTemplate = curPrefab.transform.Find("Visual") ?? curPrefab.transform;
+                    GameObject model = UnityEngine.Object.Instantiate(curVisualTemplate.gameObject, dnStage.transform);
+                    model.name = dnNames[i];
+                    model.transform.localPosition = new Vector3(dnX[i], 0f, 0f);
+                    model.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+                    float sc = dnLvls[i] == 1 ? 1.0f : (dnLvls[i] == 2 ? VisualScale1Star.Value : VisualScale2Star.Value);
+                    model.transform.localScale = Vector3.one * sc;
+
+                    VisEquipment curVisEq = curPrefab.GetComponent<VisEquipment>();
+                    string rightHandBoneName = curVisEq?.m_rightHand != null ? curVisEq.m_rightHand.name : "RightHand_Attach";
+                    Humanoid curHum = curPrefab.GetComponent<Humanoid>();
+                    SkinnedMeshRenderer bodySmr = model.GetComponentInChildren<SkinnedMeshRenderer>(includeInactive: true);
+                    if (bodySmr != null && curHum?.m_defaultItems != null)
+                    {
+                        Transform rightHand = null;
+                        foreach (Transform t in model.GetComponentsInChildren<Transform>(includeInactive: true))
+                        {
+                            if (string.Equals(t.name, rightHandBoneName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                rightHand = t;
+                                break;
+                            }
+                        }
+                        foreach (GameObject itemPrefab in curHum.m_defaultItems)
+                        {
+                            if (itemPrefab == null) continue;
+                            Transform attachSkin = itemPrefab.transform.Find("attach_skin");
+                            if (attachSkin != null)
+                            {
+                                GameObject skinInst = UnityEngine.Object.Instantiate(attachSkin.gameObject, bodySmr.transform.parent);
+                                skinInst.SetActive(true);
+                                foreach (SkinnedMeshRenderer smr in skinInst.GetComponentsInChildren<SkinnedMeshRenderer>(includeInactive: true))
+                                {
+                                    smr.rootBone = bodySmr.rootBone;
+                                    smr.bones = bodySmr.bones;
+                                }
+                            }
+                            Transform attachWeapon = itemPrefab.transform.Find("attach") ?? itemPrefab.transform.Find("attach_r.hand");
+                            if (attachWeapon != null && rightHand != null)
+                            {
+                                GameObject weaponInst = UnityEngine.Object.Instantiate(attachWeapon.gameObject);
+                                weaponInst.name = "attach_" + itemPrefab.name;
+                                weaponInst.transform.SetParent(rightHand, worldPositionStays: true);
+                                weaponInst.transform.localPosition = Vector3.zero;
+                                weaponInst.transform.localRotation = Quaternion.identity;
+                                weaponInst.SetActive(true);
+                            }
+                        }
+                    }
+                    Light dnAura = null;
+                    InsideDeepNorthSpawn = true;
+                    try
+                    {
+                        AshlandsDvergrEnhancer.ApplyStyleToHierarchy(model.transform, dnLvls[i], ref dnAura, out _);
+                    }
+                    finally
+                    {
+                        InsideDeepNorthSpawn = false;
+                    }
+                }
+                GameObject dnLightObj = new GameObject("DNKeyLight");
+                dnLightObj.transform.SetParent(dnStage.transform, false);
+                dnLightObj.transform.localPosition = new Vector3(1.5f, 3.2f, -3.5f);
+                dnLightObj.transform.LookAt(dnStage.transform.position + new Vector3(0f, 1.1f, 0f));
+                Light dnKeyLight = dnLightObj.AddComponent<Light>();
+                dnKeyLight.type = LightType.Directional;
+                dnKeyLight.color = new Color(0.92f, 0.96f, 1.0f);
+                dnKeyLight.intensity = 1.2f;
+
+                GameObject dnCamObj = new GameObject("DNValidationCamera");
+                dnCamObj.transform.SetParent(dnStage.transform, false);
+                dnCamObj.transform.localPosition = new Vector3(0f, 1.15f, -3.9f);
+                dnCamObj.transform.LookAt(dnStage.transform.position + new Vector3(0f, 1.05f, 0f));
+                Camera dnCam = dnCamObj.AddComponent<Camera>();
+                dnCam.clearFlags = CameraClearFlags.SolidColor;
+                dnCam.backgroundColor = new Color(0.09f, 0.12f, 0.16f, 1f);
+                dnCam.fieldOfView = 42f;
+                dnCam.nearClipPlane = 0.1f;
+                dnCam.farClipPlane = 50f;
+                dnCam.targetTexture = rt;
+                dnCam.Render();
+                RenderTexture.active = rt;
+                tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                tex.Apply();
+                RenderTexture.active = null;
+                byte[] dnPng = ImageConversion.EncodeToPNG(tex);
+                string dnOutPath = "/tmp/dvergr_deepnorth_validation.png";
+                File.WriteAllBytes(dnOutPath, dnPng);
+                Log.LogInfo($"=== Saved Deep North validation render ({dnPng.Length} bytes) to {dnOutPath} ===");
+
+                // Close-up of Deep North Mage left palm holding Northern Vengeance sphere
+                dnCamObj.transform.localPosition = new Vector3(1.85f, 0.72f, -1.35f);
+                dnCamObj.transform.LookAt(dnStage.transform.position + new Vector3(2.15f, 0.55f, 0f));
+                dnCam.Render();
+                RenderTexture.active = rt;
+                tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                tex.Apply();
+                RenderTexture.active = null;
+                File.WriteAllBytes("/tmp/dvergr_deepnorth_palm.png", ImageConversion.EncodeToPNG(tex));
+                Log.LogInfo("=== Saved Deep North Mage palm close-up to /tmp/dvergr_deepnorth_palm.png ===");
             }
             catch (Exception ex)
             {
@@ -2558,6 +3488,7 @@ namespace AshlandsDvergrMod
         private static readonly Dictionary<int, Color> OriginalMaterialEmissions = new Dictionary<int, Color>();
 
         internal bool WasSpawnedBySpawner;
+        internal bool IsDeepNorth;
 
         private Character _character;
         private ZNetView _nview;
@@ -2594,12 +3525,14 @@ namespace AshlandsDvergrMod
             }
 
             string objName = gameObject.name ?? string.Empty;
+            bool isDeepNorthRanger = objName.StartsWith("DvergerDeepNorth", StringComparison.OrdinalIgnoreCase);
             bool isStandardAshlandsRanger = objName.StartsWith("DvergerAshlands", StringComparison.OrdinalIgnoreCase);
             bool isClassicRogue = objName.StartsWith("Dverger", StringComparison.OrdinalIgnoreCase) &&
                                   !isStandardAshlandsRanger &&
+                                  !isDeepNorthRanger &&
                                   objName.IndexOf("Mage", StringComparison.OrdinalIgnoreCase) < 0;
 
-            if (!isStandardAshlandsRanger && !isClassicRogue)
+            if (!isDeepNorthRanger && !isStandardAshlandsRanger && !isClassicRogue)
             {
                 return false;
             }
@@ -2611,8 +3544,11 @@ namespace AshlandsDvergrMod
             }
             zdo.Set("AshlandsDvergrMod_VarietyChecked", true);
 
-            string targetPrefabName = AshlandsDvergrPlugin.RollVarietyPrefabForSpawn();
-            if (isStandardAshlandsRanger && string.Equals(targetPrefabName, "DvergerAshlands", StringComparison.OrdinalIgnoreCase))
+            string targetPrefabName = isDeepNorthRanger
+                ? AshlandsDvergrPlugin.RollDeepNorthPrefabForSpawn()
+                : AshlandsDvergrPlugin.RollVarietyPrefabForSpawn();
+            if ((isDeepNorthRanger && string.Equals(targetPrefabName, "DvergerDeepNorth", StringComparison.OrdinalIgnoreCase)) ||
+                (isStandardAshlandsRanger && string.Equals(targetPrefabName, "DvergerAshlands", StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
@@ -2628,6 +3564,10 @@ namespace AshlandsDvergrMod
             Quaternion rot = transform.rotation;
 
             AshlandsDvergrPlugin.PendingVarietySpawnLevel = targetLevel;
+            if (isDeepNorthRanger)
+            {
+                AshlandsDvergrPlugin.InsideDeepNorthSpawn = true;
+            }
             GameObject newObj;
             try
             {
@@ -2636,6 +3576,10 @@ namespace AshlandsDvergrMod
             finally
             {
                 AshlandsDvergrPlugin.PendingVarietySpawnLevel = 0;
+                if (isDeepNorthRanger)
+                {
+                    AshlandsDvergrPlugin.InsideDeepNorthSpawn = false;
+                }
             }
 
             if (newObj == null)
@@ -2647,7 +3591,14 @@ namespace AshlandsDvergrMod
             if (newNview != null && newNview.IsValid() && newNview.GetZDO() != null)
             {
                 ZDO newZdo = newNview.GetZDO();
-                newZdo.Set("AshlandsDvergrMod_IsAshlands", true);
+                if (isDeepNorthRanger)
+                {
+                    newZdo.Set("AshlandsDvergrMod_IsDeepNorth", true);
+                }
+                else
+                {
+                    newZdo.Set("AshlandsDvergrMod_IsAshlands", true);
+                }
                 newZdo.Set("AshlandsDvergrMod_VarietyChecked", true);
             }
             Character newCh = newObj.GetComponent<Character>();
@@ -2750,8 +3701,207 @@ namespace AshlandsDvergrMod
             }
 
             string charName = hum.gameObject.name ?? string.Empty;
+            bool isDeepNorth = AshlandsDvergrPlugin.IsDeepNorthDvergr(hum);
             bool isMage = AshlandsDvergrPlugin.IsDvergrMageName(charName);
             bool isSupportMage = AshlandsDvergrPlugin.IsDvergrSupportMageName(charName);
+
+            if (isDeepNorth)
+            {
+                int dnLevel = Mathf.Max(1, hum.GetLevel());
+                if (isMage)
+                {
+                    // Deep North Mage tiers (NEVER casts healing):
+                    //   0★ (level 1): Staff of Protection (StaffShield)
+                    //   1★ (level 2): Staff of Protection + Northern Vengeance sphere (StaffFrostOrbs)
+                    //   2★ (level 3+): ONLY Thunderblood (StaffThunderBlood / Lightning Strike)
+                    List<ItemDrop.ItemData> toRemove = new List<ItemDrop.ItemData>();
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        ItemDrop.ItemData item = items[i];
+                        string dn = item?.m_dropPrefab != null ? item.m_dropPrefab.name : (item?.m_shared?.m_name ?? string.Empty);
+                        if (dn.IndexOf("_heal", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            (dnLevel >= 3 && (dn.IndexOf("Support_buff", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                              dn.IndexOf("_buff", StringComparison.OrdinalIgnoreCase) >= 0)))
+                        {
+                            toRemove.Add(item);
+                        }
+                    }
+                    foreach (ItemDrop.ItemData remItem in toRemove)
+                    {
+                        inv.RemoveItem(remItem);
+                    }
+
+                    ItemDrop shieldDrop = dnLevel < 3 ? AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId("StaffShield")?.GetComponent<ItemDrop>() : null;
+                    ItemDrop orbsDrop = dnLevel == 2 ? AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId("StaffFrostOrbs")?.GetComponent<ItemDrop>() : null;
+                    ItemDrop tbDrop = dnLevel >= 3 ? AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId("StaffThunderBlood")?.GetComponent<ItemDrop>() : null;
+                    ItemDrop.ItemData.SharedData shieldShared = shieldDrop?.m_itemData?.m_shared;
+                    ItemDrop.ItemData.SharedData orbsShared = orbsDrop?.m_itemData?.m_shared;
+                    ItemDrop.ItemData.SharedData tbShared = tbDrop?.m_itemData?.m_shared;
+
+                    items = inv.GetAllItems();
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        ItemDrop.ItemData item = items[i];
+                        if (item?.m_shared?.m_attack == null) continue;
+                        string dn = item.m_dropPrefab != null ? item.m_dropPrefab.name : (item.m_shared.m_name ?? string.Empty);
+
+                        if (dnLevel < 3 && shieldShared?.m_attack != null &&
+                            (dn.IndexOf("Support_buff", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             dn.IndexOf("_buff", StringComparison.OrdinalIgnoreCase) >= 0))
+                        {
+                            ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                            Attack clonedAtk = clonedShared.m_attack.Clone();
+                            if (shieldShared.m_attack.m_attackProjectile != null)
+                            {
+                                clonedAtk.m_attackProjectile = shieldShared.m_attack.m_attackProjectile;
+                            }
+                            clonedAtk.m_attackAnimation = "attack_protect";
+                            clonedAtk.m_attackEitr = 0f;
+                            clonedAtk.m_attackHealth = 0f;
+                            clonedAtk.m_attackHealthPercentage = 0f;
+                            clonedAtk.m_attackStamina = 0f;
+                            clonedShared.m_attack = clonedAtk;
+                            if (shieldShared.m_attackStatusEffect != null)
+                            {
+                                clonedShared.m_attackStatusEffect = shieldShared.m_attackStatusEffect;
+                            }
+                            if (shieldShared.m_startEffect?.m_effectPrefabs != null && shieldShared.m_startEffect.m_effectPrefabs.Length > 0)
+                            {
+                                clonedShared.m_startEffect = shieldShared.m_startEffect;
+                            }
+                            if (shieldShared.m_triggerEffect?.m_effectPrefabs != null && shieldShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                            {
+                                clonedShared.m_triggerEffect = shieldShared.m_triggerEffect;
+                            }
+                            clonedShared.m_aiAttackRange = 15f;
+                            clonedShared.m_aiAttackInterval = 20f;
+                            clonedShared.m_aiPrioritized = true;
+                            item.m_shared = clonedShared;
+                        }
+                        else if (dnLevel == 2 && orbsShared?.m_attack != null &&
+                                 dn.IndexOf("Mistile", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                            Attack clonedAtk = clonedShared.m_attack.Clone();
+                            if (orbsShared.m_attack.m_attackProjectile != null)
+                            {
+                                clonedAtk.m_attackProjectile = orbsShared.m_attack.m_attackProjectile;
+                            }
+                            // Uses 'attack_heal' trigger whose 'Staff Magic Heal' clip is overridden with Player's 'FrostShield' animation
+                            clonedAtk.m_attackAnimation = "attack_heal";
+                            clonedAtk.m_projectiles = Mathf.Max(1, orbsShared.m_attack.m_projectiles);
+                            clonedAtk.m_burstInterval = orbsShared.m_attack.m_burstInterval;
+                            clonedAtk.m_projectileAccuracy = orbsShared.m_attack.m_projectileAccuracy;
+                            clonedAtk.m_projectileAccuracyMin = orbsShared.m_attack.m_projectileAccuracyMin;
+                            clonedAtk.m_projectileVel = orbsShared.m_attack.m_projectileVel;
+                            clonedAtk.m_projectileVelMin = orbsShared.m_attack.m_projectileVelMin;
+                            clonedAtk.m_attackEitr = 0f;
+                            clonedAtk.m_attackHealth = 0f;
+                            clonedAtk.m_attackHealthPercentage = 0f;
+                            clonedAtk.m_attackStamina = 0f;
+                            clonedShared.m_attack = clonedAtk;
+                            clonedShared.m_damages = orbsShared.m_damages;
+                            if (orbsShared.m_attackStatusEffect != null)
+                            {
+                                clonedShared.m_attackStatusEffect = orbsShared.m_attackStatusEffect;
+                            }
+                            if (orbsShared.m_startEffect?.m_effectPrefabs != null && orbsShared.m_startEffect.m_effectPrefabs.Length > 0)
+                            {
+                                clonedShared.m_startEffect = orbsShared.m_startEffect;
+                            }
+                            if (orbsShared.m_triggerEffect?.m_effectPrefabs != null && orbsShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                            {
+                                clonedShared.m_triggerEffect = orbsShared.m_triggerEffect;
+                            }
+                            clonedShared.m_aiAttackRange = 16f;
+                            clonedShared.m_aiAttackInterval = 20f;
+                            clonedShared.m_aiPrioritized = false;
+                            clonedShared.m_aiAttackMaxAngle = 35f;
+                            item.m_shared = clonedShared;
+                        }
+                        else if (dnLevel >= 3 && tbShared?.m_attack != null &&
+                                 dn.IndexOf("Mistile", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                            Attack clonedAtk = clonedShared.m_attack.Clone();
+                            if (tbShared.m_attack.m_attackProjectile != null)
+                            {
+                                clonedAtk.m_attackProjectile = tbShared.m_attack.m_attackProjectile;
+                            }
+                            clonedAtk.m_attackAnimation = "attack_protect";
+                            clonedAtk.m_projectiles = Mathf.Max(1, tbShared.m_attack.m_projectiles);
+                            clonedAtk.m_burstInterval = tbShared.m_attack.m_burstInterval;
+                            clonedAtk.m_projectileAccuracy = tbShared.m_attack.m_projectileAccuracy;
+                            clonedAtk.m_projectileAccuracyMin = tbShared.m_attack.m_projectileAccuracyMin;
+                            clonedAtk.m_projectileVel = tbShared.m_attack.m_projectileVel;
+                            clonedAtk.m_projectileVelMin = tbShared.m_attack.m_projectileVelMin;
+                            clonedAtk.m_attackEitr = 0f;
+                            clonedAtk.m_attackHealth = 0f;
+                            clonedAtk.m_attackHealthPercentage = 0f;
+                            clonedAtk.m_attackStamina = 0f;
+                            clonedShared.m_attack = clonedAtk;
+                            clonedShared.m_damages = GetWeaponDamageAtQuality(tbShared, 2);
+                            if (tbShared.m_startEffect?.m_effectPrefabs != null && tbShared.m_startEffect.m_effectPrefabs.Length > 0)
+                            {
+                                clonedShared.m_startEffect = tbShared.m_startEffect;
+                            }
+                            if (tbShared.m_triggerEffect?.m_effectPrefabs != null && tbShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                            {
+                                clonedShared.m_triggerEffect = tbShared.m_triggerEffect;
+                            }
+                            clonedShared.m_aiAttackRange = 20f;
+                            clonedShared.m_aiAttackInterval = 8f;
+                            clonedShared.m_aiPrioritized = true;
+                            clonedShared.m_aiAttackMaxAngle = 35f;
+                            item.m_shared = clonedShared;
+                        }
+                    }
+                }
+                else
+                {
+                    // Deep North Ranger (DvergerDeepNorth): 0/1★ -> Nord Crossbow (CrossbowGold), 2★ -> Thunderblood Crossbow (CrossbowGold_BloodLightning)
+                    string dnBowName = (dnLevel >= 3 && AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value)
+                        ? "CrossbowGold_BloodLightning"
+                        : "CrossbowGold";
+                    ItemDrop nordDrop = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(dnBowName)?.GetComponent<ItemDrop>();
+                    ItemDrop.ItemData.SharedData nordShared = nordDrop?.m_itemData?.m_shared;
+                    if (nordShared != null)
+                    {
+                        for (int i = 0; i < items.Count; i++)
+                        {
+                            ItemDrop.ItemData item = items[i];
+                            if (item?.m_shared?.m_attack == null) continue;
+                            string dn = item.m_dropPrefab != null ? item.m_dropPrefab.name : (item.m_shared.m_name ?? string.Empty);
+                            if (dn.IndexOf("Arbalest_shoot", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                ItemDrop.ItemData.SharedData clonedShared = (ItemDrop.ItemData.SharedData)ShallowCloneSharedData(item.m_shared);
+                                Attack clonedAtk = clonedShared.m_attack.Clone();
+                                clonedAtk.m_attackEitr = 0f;
+                                clonedAtk.m_attackHealth = 0f;
+                                clonedAtk.m_attackHealthPercentage = 0f;
+                                clonedShared.m_attack = clonedAtk;
+                                HitData.DamageTypes nordDmg = GetWeaponDamageAtQuality(nordShared, dnLevel >= 3 ? 2 : 1);
+                                clonedShared.m_damages.m_pierce = Mathf.Max(clonedShared.m_damages.m_pierce, nordDmg.m_pierce);
+                                if (nordDmg.m_lightning > 0f)
+                                {
+                                    clonedShared.m_damages.m_lightning = Mathf.Max(clonedShared.m_damages.m_lightning, nordDmg.m_lightning);
+                                }
+                                if (nordShared.m_startEffect?.m_effectPrefabs != null && nordShared.m_startEffect.m_effectPrefabs.Length > 0)
+                                {
+                                    clonedShared.m_startEffect = nordShared.m_startEffect;
+                                }
+                                if (nordShared.m_triggerEffect?.m_effectPrefabs != null && nordShared.m_triggerEffect.m_effectPrefabs.Length > 0)
+                                {
+                                    clonedShared.m_triggerEffect = nordShared.m_triggerEffect;
+                                }
+                                item.m_shared = clonedShared;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+
             int level = Mathf.Max(1, hum.GetLevel());
             bool useAshlandsWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value && (level >= 3 || (isMage && !isSupportMage));
             if (!useAshlandsWep || isSupportMage)
@@ -2759,7 +3909,9 @@ namespace AshlandsDvergrMod
                 return;
             }
 
-            string wepPrefabName = AshlandsDvergrPlugin.GetEquivalentBloodWeaponPrefabName(charName);
+            string wepPrefabName = isDeepNorth
+                ? (isMage ? "StaffShield" : "CrossbowGold")
+                : AshlandsDvergrPlugin.GetEquivalentBloodWeaponPrefabName(charName);
             GameObject wepPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(wepPrefabName);
             ItemDrop wepDrop = wepPrefab != null ? wepPrefab.GetComponent<ItemDrop>() : null;
             if (wepDrop == null || wepDrop.m_itemData == null || wepDrop.m_itemData.m_shared == null)
@@ -2768,6 +3920,7 @@ namespace AshlandsDvergrMod
             }
 
             ItemDrop.ItemData.SharedData srcShared = wepDrop.m_itemData.m_shared;
+            HitData.DamageTypes srcDmg = GetWeaponDamageAtQuality(srcShared, level >= 3 ? 2 : 1);
             Attack srcAtk = srcShared.m_attack;
             if (srcAtk == null)
             {
@@ -2814,7 +3967,7 @@ namespace AshlandsDvergrMod
                     clonedAtk.m_attackStamina = 0f;
                     // Keep valid Dvergr animation ("attack_cast" or "attack_fireshower") so ZSyncAnimation triggers OnAttackTrigger!
                     clonedShared.m_attack = clonedAtk;
-                    clonedShared.m_damages = srcShared.m_damages;
+                    clonedShared.m_damages = srcDmg;
                     if (clonedShared.m_damages.m_fire < 130f)
                     {
                         clonedShared.m_damages.m_fire = 130f;
@@ -2853,7 +4006,7 @@ namespace AshlandsDvergrMod
                     clonedAtk.m_attackStamina = 0f;
                     // Keep valid Dvergr animation ("attack_icicle")
                     clonedShared.m_attack = clonedAtk;
-                    clonedShared.m_damages = srcShared.m_damages;
+                    clonedShared.m_damages = srcDmg;
                     if (srcShared.m_startEffect != null && srcShared.m_startEffect.m_effectPrefabs != null && srcShared.m_startEffect.m_effectPrefabs.Length > 0)
                     {
                         clonedShared.m_startEffect = srcShared.m_startEffect;
@@ -2888,7 +4041,7 @@ namespace AshlandsDvergrMod
                     clonedAtk.m_attackHealthPercentage = 0f;
                     clonedAtk.m_attackStamina = 0f;
                     clonedShared.m_attack = clonedAtk;
-                    clonedShared.m_damages = srcShared.m_damages;
+                    clonedShared.m_damages = srcDmg;
                     if (clonedShared.m_damages.m_frost < 65f)
                     {
                         clonedShared.m_damages.m_frost = 65f;
@@ -2916,7 +4069,7 @@ namespace AshlandsDvergrMod
                     clonedAtk.m_attackHealth = 0f;
                     clonedAtk.m_attackHealthPercentage = 0f;
                     clonedShared.m_attack = clonedAtk;
-                    clonedShared.m_damages.m_pierce = Mathf.Max(clonedShared.m_damages.m_pierce, srcShared.m_damages.m_pierce);
+                    clonedShared.m_damages.m_pierce = Mathf.Max(clonedShared.m_damages.m_pierce, srcDmg.m_pierce);
                     if (srcShared.m_startEffect != null && srcShared.m_startEffect.m_effectPrefabs != null && srcShared.m_startEffect.m_effectPrefabs.Length > 0)
                     {
                         clonedShared.m_startEffect = srcShared.m_startEffect;
@@ -2928,6 +4081,16 @@ namespace AshlandsDvergrMod
                     item.m_shared = clonedShared;
                 }
             }
+        }
+
+        private static HitData.DamageTypes GetWeaponDamageAtQuality(ItemDrop.ItemData.SharedData shared, int quality)
+        {
+            HitData.DamageTypes dmg = shared.m_damages;
+            for (int q = 1; q < quality; q++)
+            {
+                dmg.Add(shared.m_damagesPerLevel);
+            }
+            return dmg;
         }
 
         private static object ShallowCloneSharedData(ItemDrop.ItemData.SharedData shared)
@@ -3059,9 +4222,12 @@ namespace AshlandsDvergrMod
         {
             Character ch = root.GetComponentInParent<Character>() ?? root.GetComponentInChildren<Character>();
             string charName = ch != null ? ch.gameObject.name : root.name;
+            bool isDeepNorth = ch != null
+                ? AshlandsDvergrPlugin.IsDeepNorthDvergr(ch)
+                : (AshlandsDvergrPlugin.InsideDeepNorthSpawn || charName.IndexOf("DeepNorth", StringComparison.OrdinalIgnoreCase) >= 0);
             bool isMage = AshlandsDvergrPlugin.IsDvergrMageName(charName);
             bool isSupportMage = AshlandsDvergrPlugin.IsDvergrSupportMageName(charName);
-            bool useBloodWep = AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value && (level >= 3 || (isMage && !isSupportMage));
+            bool useBloodWep = isDeepNorth || (AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value && (level >= 3 || (isMage && !isSupportMage)));
             Transform rightHand = visEq != null && visEq.m_rightHand != null
                 ? visEq.m_rightHand
                 : FindBone(root, visEq, "r.hand", "RightHand_Attach", "RightHand");
@@ -3071,7 +4237,7 @@ namespace AshlandsDvergrMod
             }
 
             Transform existingBloodWep = rightHand.Find("AshlandsDvergr_BloodWeapon");
-            if (!useBloodWep || isSupportMage)
+            if (!useBloodWep || (!isDeepNorth && isSupportMage))
             {
                 if (existingBloodWep != null)
                 {
@@ -3110,13 +4276,37 @@ namespace AshlandsDvergrMod
                 child.gameObject.SetActive(false);
             }
 
-            if (existingBloodWep != null)
+            string wepPrefabName = isDeepNorth
+                ? (isMage ? (level >= 3 ? "StaffThunderBlood" : "StaffShield") : ((level >= 3 && AshlandsDvergrPlugin.UseAshlandsBloodWeapons.Value) ? "CrossbowGold_BloodLightning" : "CrossbowGold"))
+                : AshlandsDvergrPlugin.GetEquivalentBloodWeaponPrefabName(charName);
+
+            // Ensure left-hand Northern Vengeance sphere ONLY appears on 1-star (level == 2) Deep North Mages
+            if (isDeepNorth && isMage)
             {
-                existingBloodWep.gameObject.SetActive(true);
-                return;
+                Transform lhCheck = visEq != null && visEq.m_leftHand != null
+                    ? visEq.m_leftHand
+                    : FindBone(root, visEq, "l.hand", "LeftHand_Attach", "LeftHand");
+                Transform existingLeftWep = lhCheck != null ? lhCheck.Find("AshlandsDvergr_LeftWeapon") : null;
+                if (level != 2 && existingLeftWep != null)
+                {
+                    existingLeftWep.gameObject.SetActive(false);
+                }
+                else if (level == 2 && existingLeftWep != null)
+                {
+                    existingLeftWep.gameObject.SetActive(true);
+                }
             }
 
-            string wepPrefabName = AshlandsDvergrPlugin.GetEquivalentBloodWeaponPrefabName(charName);
+            if (existingBloodWep != null)
+            {
+                if (existingBloodWep.Find("__tag_" + wepPrefabName) != null)
+                {
+                    existingBloodWep.gameObject.SetActive(true);
+                    return;
+                }
+                UnityEngine.Object.DestroyImmediate(existingBloodWep.gameObject);
+            }
+
             GameObject wepPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId(wepPrefabName);
             if (wepPrefab == null)
             {
@@ -3149,9 +4339,12 @@ namespace AshlandsDvergrMod
 
             GameObject wepInst = UnityEngine.Object.Instantiate(attach.gameObject, rightHand.position, rightHand.rotation);
             wepInst.name = "AshlandsDvergr_BloodWeapon";
+            new GameObject("__tag_" + wepPrefabName).transform.SetParent(wepInst.transform, false);
             wepInst.transform.SetParent(rightHand, worldPositionStays: true);
             float s = wepInst.transform.localScale.x;
-            if (string.Equals(wepPrefabName, "CrossbowRipperBlood", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(wepPrefabName, "CrossbowRipperBlood", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(wepPrefabName, "CrossbowGold", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(wepPrefabName, "CrossbowGold_BloodLightning", StringComparison.OrdinalIgnoreCase))
             {
                 // Preserve wepInst.transform.localScale (0.01) computed by SetParent(..., worldPositionStays: true) for the 100x Armature bone!
                 // Quaternion.Euler(0f, 90f, 0f) maps:
@@ -3173,7 +4366,10 @@ namespace AshlandsDvergrMod
                 }
             }
             else if (string.Equals(wepPrefabName, "StaffClusterbomb", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(wepPrefabName, "StaffIceShards", StringComparison.OrdinalIgnoreCase))
+                     string.Equals(wepPrefabName, "StaffIceShards", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(wepPrefabName, "StaffShield", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(wepPrefabName, "StaffFrostOrbs", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(wepPrefabName, "StaffThunderBlood", StringComparison.OrdinalIgnoreCase))
             {
                 // Player staffs lie along +Z_att in attach space, whereas DvergerMage staffs lie along +X_rhand with Y=+0.12, Z=-0.04.
                 // Rotating by Euler(0, 90, 0) maps +Z_att -> +X_rhand so the staff shaft sits inside the mage's right hand grip!
@@ -3220,6 +4416,33 @@ namespace AshlandsDvergrMod
             if (debugCube != null)
             {
                 debugCube.gameObject.SetActive(false);
+            }
+
+            // ONLY 1-star (level == 2) Deep North Mage dual-wields Northern Vengeance frost orb in l.hand
+            if (isDeepNorth && isMage && level == 2)
+            {
+                Transform leftHand = visEq != null && visEq.m_leftHand != null
+                    ? visEq.m_leftHand
+                    : FindBone(root, visEq, "l.hand", "LeftHand_Attach", "LeftHand");
+                if (leftHand != null && leftHand.Find("AshlandsDvergr_LeftWeapon") == null)
+                {
+                    GameObject orbPrefab = AshlandsDvergrPlugin.ResolvePrefabByNameOrAssetId("StaffFrostOrbs");
+                    Transform orbAttach = orbPrefab != null ? (orbPrefab.transform.Find("attach") ?? orbPrefab.transform.Find("attach_l.hand")) : null;
+                    if (orbAttach != null)
+                    {
+                        GameObject orbInst = UnityEngine.Object.Instantiate(orbAttach.gameObject, leftHand.position, leftHand.rotation);
+                        orbInst.name = "AshlandsDvergr_LeftWeapon";
+                        orbInst.transform.SetParent(leftHand, worldPositionStays: true);
+                        float ls = orbInst.transform.localScale.x;
+                        // Center StaffFrostOrbs mesh dead-center in l.hand palm with clean clearance so nothing pokes through back of hand
+                        orbInst.transform.localScale = Vector3.one * (ls * 0.65f);
+                        orbInst.transform.localPosition = new Vector3(0.005f * ls, 0.015f * ls, -0.11f * ls);
+                        orbInst.transform.localRotation = Quaternion.identity;
+                        orbInst.SetActive(true);
+                        foreach (Collider col in orbInst.GetComponentsInChildren<Collider>(includeInactive: true)) col.enabled = false;
+                        foreach (LODGroup lod in orbInst.GetComponentsInChildren<LODGroup>(includeInactive: true)) lod.enabled = false;
+                    }
+                }
             }
         }
 
